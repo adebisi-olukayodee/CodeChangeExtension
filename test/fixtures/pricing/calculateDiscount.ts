@@ -1,4 +1,4 @@
-  function calculateDiscount(price: number): number {
+  function calculateDiscount(price: number) {
   return price * 0.1;
 }
 /* test*/

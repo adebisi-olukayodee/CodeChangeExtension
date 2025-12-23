@@ -6,7 +6,7 @@
 import * as ts from 'typescript';
 import * as path from 'path';
 import * as fs from 'fs';
-import { Project, SourceFile, Node, FunctionDeclaration, ClassDeclaration, MethodDeclaration, ArrowFunction } from 'ts-morph';
+import { Project, SourceFile, Node, FunctionDeclaration, ClassDeclaration, MethodDeclaration, ArrowFunction, InterfaceDeclaration, TypeAliasDeclaration, EnumDeclaration } from 'ts-morph';
 import {
     ILanguageAnalyzer,
     LanguageAnalysisResult,
@@ -15,6 +15,16 @@ import {
     Parameter,
     Property
 } from '../ILanguageAnalyzer';
+import {
+    SymbolSnapshot,
+    SymbolInfo,
+    ParameterInfo,
+    ExportInfo,
+    ImportInfo,
+    TypeInfo,
+    SymbolChange,
+    SnapshotDiff
+} from './SymbolSnapshot';
 
 export class TypeScriptAnalyzer implements ILanguageAnalyzer {
     private project: Project;
@@ -589,6 +599,805 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             optional: p.hasQuestionToken(),
             defaultValue: p.getInitializer()?.getText()
         }));
+    }
+
+    /**
+     * Build a snapshot of the code state (AST + symbols + exports).
+     * This is an immutable representation that can be cached and compared.
+     */
+    async buildSnapshot(filePath: string, content: string): Promise<SymbolSnapshot> {
+        console.log(`[TypeScriptAnalyzer] Building snapshot for: ${filePath}`);
+        console.log(`[TypeScriptAnalyzer] Content length: ${content.length} chars`);
+        console.log(`[TypeScriptAnalyzer] Content preview (first 200 chars): ${content.substring(0, 200).replace(/\n/g, '\\n')}`);
+        
+        try {
+            // Normalize file path to absolute
+            const normalizedPath = path.isAbsolute(filePath) ? path.normalize(filePath) : path.resolve(filePath);
+            console.log(`[TypeScriptAnalyzer] Normalized path: ${normalizedPath}`);
+            
+            // Add or update file in ts-morph project
+            let sourceFile: SourceFile;
+            const existingFile = this.project.getSourceFile(normalizedPath);
+            if (existingFile) {
+                console.log(`[TypeScriptAnalyzer] Updating existing source file`);
+                sourceFile = existingFile;
+                sourceFile.replaceWithText(content);
+            } else {
+                console.log(`[TypeScriptAnalyzer] Creating new source file`);
+                sourceFile = this.project.createSourceFile(normalizedPath, content, { overwrite: true });
+            }
+
+            // Verify source file was created correctly
+            const sourceText = sourceFile.getText();
+            console.log(`[TypeScriptAnalyzer] Source file text length: ${sourceText.length} chars`);
+            console.log(`[TypeScriptAnalyzer] Content matches: ${sourceText === content}`);
+
+            // Debug: Check what statements are found
+            const statements = sourceFile.getStatements();
+            console.log(`[TypeScriptAnalyzer] Found ${statements.length} top-level statements`);
+            statements.forEach((stmt, idx) => {
+                console.log(`[TypeScriptAnalyzer]   Statement ${idx}: ${stmt.getKindName()} at line ${stmt.getStartLineNumber()}`);
+                console.log(`[TypeScriptAnalyzer]     Text preview: ${stmt.getText().substring(0, 100).replace(/\n/g, '\\n')}`);
+            });
+
+            // Check for syntax errors
+            const diagnostics = sourceFile.getPreEmitDiagnostics();
+            if (diagnostics.length > 0) {
+                console.warn(`[TypeScriptAnalyzer] Found ${diagnostics.length} diagnostics:`);
+                diagnostics.forEach(d => {
+                    console.warn(`[TypeScriptAnalyzer]   - ${d.getMessageText()} at line ${d.getLineNumber()}`);
+                });
+            } else {
+                console.log(`[TypeScriptAnalyzer] No syntax errors detected`);
+            }
+
+            // Update TypeScript program to include this file
+            this.updateTypeScriptProgram();
+
+            const functions: SymbolInfo[] = [];
+            const classes: SymbolInfo[] = [];
+            const interfaces: SymbolInfo[] = [];
+            const typeAliases: SymbolInfo[] = [];
+            const enums: SymbolInfo[] = [];
+            const exports: ExportInfo[] = [];
+            const imports: ImportInfo[] = [];
+            const typeInfo = new Map<string, TypeInfo>();
+
+            // Extract functions
+            const functionDeclarations = sourceFile.getFunctions();
+            console.log(`[TypeScriptAnalyzer] Found ${functionDeclarations.length} function declarations`);
+            for (const func of functionDeclarations) {
+                console.log(`[TypeScriptAnalyzer]   - Function: ${func.getName()} at line ${func.getStartLineNumber()}`);
+                const symbolInfo = this.createFunctionSymbolInfo(func, null);
+                functions.push(symbolInfo);
+                
+                // Get type information if checker is available
+                if (this.checker && func.compilerNode) {
+                    try {
+                        // Access the underlying TypeScript node
+                        const tsNode = func.compilerNode as unknown as ts.Node;
+                        const symbolTypeInfo = this.getSymbolTypeInfo(tsNode);
+                        if (symbolTypeInfo) {
+                            typeInfo.set(symbolInfo.qualifiedName, symbolTypeInfo);
+                        }
+                    } catch {
+                        // Skip if type checking fails
+                    }
+                }
+            }
+
+            // Extract arrow functions assigned to variables
+            const variableDeclarations = sourceFile.getVariableDeclarations();
+            console.log(`[TypeScriptAnalyzer] Found ${variableDeclarations.length} variable declarations`);
+            for (const varDecl of variableDeclarations) {
+                const initializer = varDecl.getInitializer();
+                if (initializer) {
+                    const initializerText = initializer.getText();
+                    if (initializerText.includes('=>')) {
+                        console.log(`[TypeScriptAnalyzer]   - Arrow function: ${varDecl.getName()} at line ${varDecl.getStartLineNumber()}`);
+                        const symbolInfo = this.createArrowFunctionSymbolInfo(varDecl, initializer);
+                        functions.push(symbolInfo);
+                    }
+                }
+            }
+
+            // Extract classes
+            const classDeclarations = sourceFile.getClasses();
+            console.log(`[TypeScriptAnalyzer] Found ${classDeclarations.length} class declarations`);
+            for (const cls of classDeclarations) {
+                console.log(`[TypeScriptAnalyzer]   - Class: ${cls.getName()} at line ${cls.getStartLineNumber()}`);
+                const symbolInfo = this.createClassSymbolInfo(cls);
+                classes.push(symbolInfo);
+            }
+
+            // Extract interfaces
+            const interfaceDeclarations = sourceFile.getInterfaces();
+            console.log(`[TypeScriptAnalyzer] Found ${interfaceDeclarations.length} interface declarations`);
+            for (const intf of interfaceDeclarations) {
+                console.log(`[TypeScriptAnalyzer]   - Interface: ${intf.getName()} at line ${intf.getStartLineNumber()}`);
+                const symbolInfo = this.createInterfaceSymbolInfo(intf);
+                interfaces.push(symbolInfo);
+            }
+
+            // Extract type aliases
+            const typeAliasDeclarations = sourceFile.getTypeAliases();
+            console.log(`[TypeScriptAnalyzer] Found ${typeAliasDeclarations.length} type alias declarations`);
+            for (const typeAlias of typeAliasDeclarations) {
+                console.log(`[TypeScriptAnalyzer]   - Type alias: ${typeAlias.getName()} at line ${typeAlias.getStartLineNumber()}`);
+                const symbolInfo = this.createTypeAliasSymbolInfo(typeAlias);
+                typeAliases.push(symbolInfo);
+            }
+
+            // Extract enums
+            const enumDeclarations = sourceFile.getEnums();
+            console.log(`[TypeScriptAnalyzer] Found ${enumDeclarations.length} enum declarations`);
+            for (const enumDecl of enumDeclarations) {
+                console.log(`[TypeScriptAnalyzer]   - Enum: ${enumDecl.getName()} at line ${enumDecl.getStartLineNumber()}`);
+                const symbolInfo = this.createEnumSymbolInfo(enumDecl);
+                enums.push(symbolInfo);
+            }
+
+            // Extract exports
+            const exportDeclarations = sourceFile.getExportedDeclarations();
+            const defaultExport = sourceFile.getDefaultExportSymbol();
+            console.log(`[TypeScriptAnalyzer] Found ${exportDeclarations.size} exported declaration groups`);
+            for (const [name, declarations] of exportDeclarations) {
+                console.log(`[TypeScriptAnalyzer]   - Export: ${name} (${declarations.length} declarations)`);
+                for (const decl of declarations) {
+                    const isDefault = defaultExport?.getName() === name;
+                    const exportInfo: ExportInfo = {
+                        name,
+                        type: isDefault ? 'default' : 'named',
+                        kind: this.getDeclarationKind(decl),
+                        line: decl.getStartLineNumber()
+                    };
+                    exports.push(exportInfo);
+                }
+            }
+            
+            // Extract re-exports (export { x } from './module' or export { x as y } from './module')
+            const exportStatements = sourceFile.getExportDeclarations();
+            for (const exportStmt of exportStatements) {
+                const moduleSpecifier = exportStmt.getModuleSpecifierValue();
+                if (moduleSpecifier) {
+                    // This is a re-export
+                    const namedExports = exportStmt.getNamedExports();
+                    for (const namedExport of namedExports) {
+                        const exportedName = namedExport.getName();
+                        const alias = namedExport.getAliasNode()?.getText();
+                        const exportInfo: ExportInfo = {
+                            name: alias || exportedName, // Local name (what's exported from this file)
+                            type: 'named',
+                            kind: 're-export',
+                            line: exportStmt.getStartLineNumber(),
+                            sourceModule: moduleSpecifier,
+                            exportedName: exportedName, // Original name from source module
+                            localName: alias || undefined // Local alias if exists
+                        };
+                        exports.push(exportInfo);
+                    }
+                }
+            }
+            
+            // Handle default export separately if exists
+            if (defaultExport) {
+                const defaultExportDecl = sourceFile.getDefaultExportSymbol()?.getValueDeclaration();
+                if (defaultExportDecl) {
+                    const node = this.project.getSourceFile(normalizedPath)?.getDefaultExportSymbol()?.getValueDeclaration();
+                    if (node) {
+                        const exportInfo: ExportInfo = {
+                            name: 'default',
+                            type: 'default',
+                            kind: this.getDeclarationKind(node as Node),
+                            line: (node as any).getStartLineNumber?.() || 0
+                        };
+                        exports.push(exportInfo);
+                    }
+                }
+            }
+
+            // Extract imports
+            const importDeclarations = sourceFile.getImportDeclarations();
+            console.log(`[TypeScriptAnalyzer] Found ${importDeclarations.length} import declarations`);
+            for (const importDecl of importDeclarations) {
+                const moduleSpecifier = importDecl.getModuleSpecifierValue();
+                if (moduleSpecifier) {
+                    console.log(`[TypeScriptAnalyzer]   - Import from: ${moduleSpecifier}`);
+                    const namedImports = importDecl.getNamedImports().map(imp => imp.getName());
+                    const defaultImport = importDecl.getDefaultImport()?.getText();
+                    const namespaceImport = importDecl.getNamespaceImport()?.getText();
+
+                    const importInfo: ImportInfo = {
+                        module: moduleSpecifier,
+                        symbols: defaultImport ? [defaultImport, ...namedImports] : namedImports,
+                        isDefault: !!defaultImport,
+                        isNamespace: !!namespaceImport
+                    };
+                    imports.push(importInfo);
+                }
+            }
+
+            console.log(`[TypeScriptAnalyzer] Snapshot summary:`);
+            console.log(`[TypeScriptAnalyzer]   - Functions: ${functions.length}`);
+            console.log(`[TypeScriptAnalyzer]   - Classes: ${classes.length}`);
+            console.log(`[TypeScriptAnalyzer]   - Interfaces: ${interfaces.length}`);
+            console.log(`[TypeScriptAnalyzer]   - Type aliases: ${typeAliases.length}`);
+            console.log(`[TypeScriptAnalyzer]   - Enums: ${enums.length}`);
+            console.log(`[TypeScriptAnalyzer]   - Exports: ${exports.length}`);
+            console.log(`[TypeScriptAnalyzer]   - Imports: ${imports.length}`);
+            
+            if (functions.length > 0) {
+                console.log(`[TypeScriptAnalyzer] Function details:`);
+                functions.forEach(f => {
+                    console.log(`[TypeScriptAnalyzer]   - ${f.qualifiedName} (${f.kind}) at line ${f.line}, signature: ${f.signature}`);
+                });
+            }
+
+            return {
+                filePath: normalizedPath,
+                timestamp: new Date(),
+                functions,
+                classes,
+                interfaces,
+                typeAliases,
+                enums,
+                exports,
+                imports,
+                typeInfo: typeInfo.size > 0 ? typeInfo : undefined
+            };
+        } catch (error) {
+            console.error(`Error building snapshot for ${filePath}:`, error);
+            // Return empty snapshot on error
+            return {
+                filePath,
+                timestamp: new Date(),
+                functions: [],
+                classes: [],
+                interfaces: [],
+                typeAliases: [],
+                enums: [],
+                exports: [],
+                imports: []
+            };
+        }
+    }
+
+    /**
+     * Diff two snapshots to find changes.
+     */
+    async diffSnapshots(beforeSnapshot: SymbolSnapshot, afterSnapshot: SymbolSnapshot): Promise<SnapshotDiff> {
+        console.log(`[TypeScriptAnalyzer] Diffing snapshots for: ${beforeSnapshot.filePath}`);
+        
+        const changedSymbols: SymbolChange[] = [];
+        const added: SymbolInfo[] = [];
+        const removed: SymbolInfo[] = [];
+        const modified: SymbolChange[] = [];
+
+        // Helper to create a map by qualified name
+        const createSymbolMap = (symbols: SymbolInfo[]): Map<string, SymbolInfo> => {
+            return new Map(symbols.map(s => [s.qualifiedName, s]));
+        };
+
+        // Compare functions
+        const beforeFuncs = createSymbolMap(beforeSnapshot.functions);
+        const afterFuncs = createSymbolMap(afterSnapshot.functions);
+        this.compareSymbols(beforeFuncs, afterFuncs, 'function', changedSymbols, added, removed, modified);
+
+        // Compare classes
+        const beforeClasses = createSymbolMap(beforeSnapshot.classes);
+        const afterClasses = createSymbolMap(afterSnapshot.classes);
+        this.compareSymbols(beforeClasses, afterClasses, 'class', changedSymbols, added, removed, modified);
+
+        // Compare interfaces
+        const beforeInterfaces = createSymbolMap(beforeSnapshot.interfaces);
+        const afterInterfaces = createSymbolMap(afterSnapshot.interfaces);
+        this.compareSymbols(beforeInterfaces, afterInterfaces, 'interface', changedSymbols, added, removed, modified);
+
+        // Compare type aliases
+        const beforeTypes = createSymbolMap(beforeSnapshot.typeAliases);
+        const afterTypes = createSymbolMap(afterSnapshot.typeAliases);
+        this.compareSymbols(beforeTypes, afterTypes, 'type', changedSymbols, added, removed, modified);
+
+        // Compare enums
+        const beforeEnums = createSymbolMap(beforeSnapshot.enums);
+        const afterEnums = createSymbolMap(afterSnapshot.enums);
+        this.compareSymbols(beforeEnums, afterEnums, 'enum', changedSymbols, added, removed, modified);
+
+        // Compare exports
+        const exportChanges = this.compareExports(beforeSnapshot.exports, afterSnapshot.exports);
+
+        return {
+            changedSymbols,
+            added,
+            removed,
+            modified,
+            exportChanges
+        };
+    }
+
+    private compareSymbols(
+        beforeMap: Map<string, SymbolInfo>,
+        afterMap: Map<string, SymbolInfo>,
+        kind: SymbolInfo['kind'],
+        changedSymbols: SymbolChange[],
+        added: SymbolInfo[],
+        removed: SymbolInfo[],
+        modified: SymbolChange[]
+    ): void {
+        // Find added symbols
+        for (const [name, afterSymbol] of afterMap) {
+            if (!beforeMap.has(name)) {
+                added.push(afterSymbol);
+                changedSymbols.push({
+                    symbol: afterSymbol,
+                    changeType: 'added',
+                    severity: afterSymbol.isExported ? 'high' : 'low',
+                    isBreaking: afterSymbol.isExported
+                });
+            }
+        }
+
+        // Find removed symbols
+        for (const [name, beforeSymbol] of beforeMap) {
+            if (!afterMap.has(name)) {
+                removed.push(beforeSymbol);
+                changedSymbols.push({
+                    symbol: beforeSymbol,
+                    changeType: 'removed',
+                    severity: beforeSymbol.isExported ? 'high' : 'medium',
+                    isBreaking: beforeSymbol.isExported
+                });
+            }
+        }
+
+        // Find modified symbols with detailed breaking change detection
+        for (const [name, afterSymbol] of afterMap) {
+            const beforeSymbol = beforeMap.get(name);
+            if (beforeSymbol) {
+                // For functions, check overload changes first
+                if ((kind === 'function' || kind === 'method') && (beforeSymbol.overloads || afterSymbol.overloads)) {
+                    const beforeOverloads = new Set(beforeSymbol.overloads || []);
+                    const afterOverloads = new Set(afterSymbol.overloads || []);
+                    
+                    // Check if overload set changed
+                    if (beforeOverloads.size !== afterOverloads.size || 
+                        ![...beforeOverloads].every(ov => afterOverloads.has(ov))) {
+                        const change: SymbolChange = {
+                            symbol: afterSymbol,
+                            changeType: 'signature-changed',
+                            before: beforeSymbol,
+                            after: afterSymbol,
+                            severity: afterSymbol.isExported ? 'high' : 'medium',
+                            isBreaking: afterSymbol.isExported,
+                            metadata: {
+                                ruleId: 'TSAPI-FN-007',
+                                message: `Function overload set changed (${beforeOverloads.size} → ${afterOverloads.size} overloads)`
+                            }
+                        };
+                        modified.push(change);
+                        changedSymbols.push(change);
+                        continue;
+                    }
+                }
+
+                // For functions, check parameter changes in detail
+                if (kind === 'function' || kind === 'method') {
+                    const paramChange = this.detectParameterBreakingChange(beforeSymbol, afterSymbol);
+                    if (paramChange) {
+                        const change: SymbolChange = {
+                            symbol: afterSymbol,
+                            changeType: paramChange.changeType,
+                            before: beforeSymbol,
+                            after: afterSymbol,
+                            severity: afterSymbol.isExported ? 'high' : 'medium',
+                            isBreaking: paramChange.isBreaking,
+                            metadata: {
+                                ruleId: paramChange.ruleId,
+                                message: paramChange.message
+                            }
+                        };
+                        modified.push(change);
+                        changedSymbols.push(change);
+                        continue;
+                    }
+                }
+
+                // For interfaces and types, check property changes
+                if (kind === 'interface' || kind === 'type') {
+                    const propertyChange = this.detectPropertyBreakingChange(beforeSymbol, afterSymbol);
+                    if (propertyChange) {
+                        const change: SymbolChange = {
+                            symbol: afterSymbol,
+                            changeType: propertyChange.changeType,
+                            before: beforeSymbol,
+                            after: afterSymbol,
+                            severity: afterSymbol.isExported ? 'high' : 'medium',
+                            isBreaking: propertyChange.isBreaking,
+                            metadata: {
+                                ruleId: propertyChange.ruleId,
+                                message: propertyChange.message
+                            }
+                        };
+                        modified.push(change);
+                        changedSymbols.push(change);
+                        continue;
+                    }
+                }
+
+                // Check if signature changed
+                if (beforeSymbol.signature !== afterSymbol.signature) {
+                    const change: SymbolChange = {
+                        symbol: afterSymbol,
+                        changeType: 'signature-changed',
+                        before: beforeSymbol,
+                        after: afterSymbol,
+                        severity: afterSymbol.isExported ? 'high' : 'medium',
+                        isBreaking: afterSymbol.isExported
+                    };
+                    modified.push(change);
+                    changedSymbols.push(change);
+                }
+                // Check if type changed (if type info available)
+                else if (beforeSymbol.returnType !== afterSymbol.returnType) {
+                    const change: SymbolChange = {
+                        symbol: afterSymbol,
+                        changeType: 'type-changed',
+                        before: beforeSymbol,
+                        after: afterSymbol,
+                        severity: afterSymbol.isExported ? 'high' : 'medium',
+                        isBreaking: afterSymbol.isExported && beforeSymbol.returnType !== undefined
+                    };
+                    modified.push(change);
+                    changedSymbols.push(change);
+                }
+            }
+        }
+    }
+
+    /**
+     * Detect specific parameter-level breaking changes (optional -> required, removed, type changed)
+     */
+    private detectParameterBreakingChange(
+        before: SymbolInfo,
+        after: SymbolInfo
+    ): { changeType: SymbolChange['changeType']; isBreaking: boolean; ruleId: string; message: string } | null {
+        if (!before.parameters || !after.parameters) {
+            return null;
+        }
+
+        const beforeParams = new Map(before.parameters.map(p => [p.name, p]));
+        const afterParams = new Map(after.parameters.map(p => [p.name, p]));
+
+        // Check for removed parameters
+        for (const [paramName, beforeParam] of beforeParams) {
+            if (!afterParams.has(paramName)) {
+                return {
+                    changeType: 'signature-changed',
+                    isBreaking: true,
+                    ruleId: 'TSAPI-FN-002',
+                    message: `Parameter '${paramName}' was removed`
+                };
+            }
+        }
+
+        // Check for parameter changes (optional -> required, type changed)
+        for (const [paramName, afterParam] of afterParams) {
+            const beforeParam = beforeParams.get(paramName);
+            if (beforeParam) {
+                // Optional -> Required
+                if (beforeParam.optional && !afterParam.optional) {
+                    return {
+                        changeType: 'signature-changed',
+                        isBreaking: true,
+                        ruleId: 'TSAPI-FN-001',
+                        message: `Parameter '${paramName}' changed from optional to required`
+                    };
+                }
+                // Type changed
+                if (beforeParam.type !== afterParam.type) {
+                    return {
+                        changeType: 'type-changed',
+                        isBreaking: true,
+                        ruleId: 'TSAPI-FN-003',
+                        message: `Parameter '${paramName}' type changed from '${beforeParam.type}' to '${afterParam.type}'`
+                    };
+                }
+            }
+        }
+
+        // Check return type change
+        if (before.returnType && after.returnType && before.returnType !== after.returnType) {
+            return {
+                changeType: 'type-changed',
+                isBreaking: true,
+                ruleId: 'TSAPI-FN-004',
+                message: `Return type changed from '${before.returnType}' to '${after.returnType}'`
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Detect property-level breaking changes in interfaces/types
+     */
+    private detectPropertyBreakingChange(
+        before: SymbolInfo,
+        after: SymbolInfo
+    ): { changeType: SymbolChange['changeType']; isBreaking: boolean; ruleId: string; message: string } | null {
+        const beforeProps = before.metadata?.properties as Array<{ name: string; type: string; isOptional?: boolean }> | undefined;
+        const afterProps = after.metadata?.properties as Array<{ name: string; type: string; isOptional?: boolean }> | undefined;
+
+        if (!beforeProps || !afterProps) {
+            return null;
+        }
+
+        const beforePropMap = new Map(beforeProps.map(p => [p.name, p]));
+        const afterPropMap = new Map(afterProps.map(p => [p.name, p]));
+
+        // Check for removed properties
+        for (const [propName, beforeProp] of beforePropMap) {
+            if (!afterPropMap.has(propName)) {
+                return {
+                    changeType: 'signature-changed',
+                    isBreaking: true,
+                    ruleId: 'TSAPI-IF-001',
+                    message: `Property '${propName}' was removed`
+                };
+            }
+        }
+
+        // Check for property changes (optional -> required, type changed)
+        for (const [propName, afterProp] of afterPropMap) {
+            const beforeProp = beforePropMap.get(propName);
+            if (beforeProp) {
+                // Optional -> Required
+                if (beforeProp.isOptional && !afterProp.isOptional) {
+                    return {
+                        changeType: 'signature-changed',
+                        isBreaking: true,
+                        ruleId: 'TSAPI-IF-002',
+                        message: `Property '${propName}' changed from optional to required`
+                    };
+                }
+                // Type changed
+                if (beforeProp.type !== afterProp.type) {
+                    return {
+                        changeType: 'type-changed',
+                        isBreaking: true,
+                        ruleId: 'TSAPI-IF-003',
+                        message: `Property '${propName}' type changed from '${beforeProp.type}' to '${afterProp.type}'`
+                    };
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private compareExports(beforeExports: ExportInfo[], afterExports: ExportInfo[]): SnapshotDiff['exportChanges'] {
+        // Create map using name + sourceModule for re-exports to handle re-export changes
+        const createExportKey = (e: ExportInfo) => e.sourceModule ? `${e.name}:${e.sourceModule}` : e.name;
+        const beforeMap = new Map(beforeExports.map(e => [createExportKey(e), e]));
+        const afterMap = new Map(afterExports.map(e => [createExportKey(e), e]));
+
+        const added: ExportInfo[] = [];
+        const removed: ExportInfo[] = [];
+        const modified: ExportInfo[] = [];
+
+        for (const [key, afterExport] of afterMap) {
+            if (!beforeMap.has(key)) {
+                added.push(afterExport);
+            } else {
+                const beforeExport = beforeMap.get(key)!;
+                // Check for re-export changes (sourceModule, exportedName, localName)
+                if (beforeExport.sourceModule !== afterExport.sourceModule ||
+                    beforeExport.exportedName !== afterExport.exportedName ||
+                    beforeExport.localName !== afterExport.localName ||
+                    beforeExport.type !== afterExport.type ||
+                    beforeExport.kind !== afterExport.kind) {
+                    modified.push(afterExport);
+                }
+            }
+        }
+
+        for (const [key, beforeExport] of beforeMap) {
+            if (!afterMap.has(key)) {
+                removed.push(beforeExport);
+            }
+        }
+
+        return { added, removed, modified };
+    }
+
+    private createFunctionSymbolInfo(func: FunctionDeclaration | MethodDeclaration, parentClass: ClassDeclaration | null): SymbolInfo {
+        const name = func.getName() || 'anonymous';
+        const qualifiedName = parentClass ? `${parentClass.getName()}.${name}` : name;
+        const signature = this.getFunctionSignature(func);
+        const returnType = this.getReturnType(func);
+        const parameters = this.getParameters(func).map(p => ({
+            name: p.name,
+            type: p.type,
+            optional: p.optional,
+            defaultValue: p.defaultValue
+        }));
+
+        // Check if exported (only FunctionDeclaration has isExported)
+        const isExported = func instanceof FunctionDeclaration ? func.isExported() : false;
+
+        // Extract overload signatures (for functions with overloads)
+        const overloads: string[] = [];
+        if (func instanceof FunctionDeclaration) {
+            // Get all overload signatures (excluding the implementation)
+            const overloadSignatures = func.getOverloads();
+            for (const overload of overloadSignatures) {
+                const overloadSig = this.getFunctionSignature(overload);
+                overloads.push(overloadSig);
+            }
+            // If there are overloads, also include the implementation signature
+            if (overloads.length > 0) {
+                overloads.push(signature);
+            }
+        }
+
+        return {
+            name,
+            qualifiedName,
+            line: func.getStartLineNumber(),
+            column: func.getStartLineNumber(true),
+            signature,
+            returnType,
+            parameters,
+            isExported,
+            kind: parentClass ? 'method' : 'function',
+            overloads: overloads.length > 0 ? overloads : undefined,
+            metadata: {
+                isAsync: func.isAsync()
+            }
+        };
+    }
+
+    private createArrowFunctionSymbolInfo(varDecl: any, initializer: any): SymbolInfo {
+        const name = varDecl.getName();
+        return {
+            name,
+            qualifiedName: name,
+            line: varDecl.getStartLineNumber(),
+            column: varDecl.getStartLineNumber(true),
+            signature: `${name}()`,
+            returnType: 'any',
+            parameters: [],
+            isExported: varDecl.getVariableStatement()?.isExported() || false,
+            kind: 'function',
+            metadata: {
+                isArrowFunction: true
+            }
+        };
+    }
+
+    private createClassSymbolInfo(cls: ClassDeclaration): SymbolInfo {
+        const name = cls.getName() || 'anonymous';
+        const methods = cls.getMethods().map(m => this.createFunctionSymbolInfo(m, cls));
+        const properties = cls.getProperties().map(p => ({
+            name: p.getName(),
+            type: p.getTypeNode()?.getText() || 'any',
+            isOptional: p.hasQuestionToken(),
+            isReadonly: p.isReadonly()
+        }));
+
+        const extendsClause = cls.getExtends();
+        return {
+            name,
+            qualifiedName: name,
+            line: cls.getStartLineNumber(),
+            column: cls.getStartLineNumber(true),
+            signature: `class ${name}${extendsClause ? ` extends ${extendsClause.getText()}` : ''}`,
+            isExported: cls.isExported(),
+            kind: 'class',
+            metadata: {
+                extends: extendsClause?.getText(),
+                implements: cls.getImplements().map(impl => impl.getText()),
+                methods: methods.map(m => m.qualifiedName),
+                properties: properties.map(p => p.name)
+            }
+        };
+    }
+
+    private createInterfaceSymbolInfo(intf: InterfaceDeclaration): SymbolInfo {
+        const name = intf.getName();
+        const properties = intf.getProperties().map(p => ({
+            name: p.getName(),
+            type: p.getTypeNode()?.getText() || 'any',
+            isOptional: p.hasQuestionToken(),
+            isReadonly: p.isReadonly()
+        }));
+
+        return {
+            name,
+            qualifiedName: name,
+            line: intf.getStartLineNumber(),
+            column: intf.getStartLineNumber(true),
+            signature: `interface ${name}`,
+            isExported: intf.isExported(),
+            kind: 'interface',
+            metadata: {
+                extends: intf.getExtends().map(e => e.getText()),
+                properties: properties.map(p => p.name)
+            }
+        };
+    }
+
+    private createTypeAliasSymbolInfo(typeAlias: TypeAliasDeclaration): SymbolInfo {
+        const name = typeAlias.getName();
+        const typeNode = typeAlias.getTypeNode();
+        return {
+            name,
+            qualifiedName: name,
+            line: typeAlias.getStartLineNumber(),
+            column: typeAlias.getStartLineNumber(true),
+            signature: `type ${name} = ${typeNode?.getText() || 'unknown'}`,
+            isExported: typeAlias.isExported(),
+            kind: 'type',
+            metadata: {
+                typeText: typeNode?.getText()
+            }
+        };
+    }
+
+    private createEnumSymbolInfo(enumDecl: EnumDeclaration): SymbolInfo {
+        const name = enumDecl.getName();
+        const members = enumDecl.getMembers().map(m => m.getName());
+        return {
+            name,
+            qualifiedName: name,
+            line: enumDecl.getStartLineNumber(),
+            column: enumDecl.getStartLineNumber(true),
+            signature: `enum ${name}`,
+            isExported: enumDecl.isExported(),
+            kind: 'enum',
+            metadata: {
+                members
+            }
+        };
+    }
+
+    private getDeclarationKind(decl: Node): string {
+        if (decl.getKindName() === 'FunctionDeclaration') return 'function';
+        if (decl.getKindName() === 'ClassDeclaration') return 'class';
+        if (decl.getKindName() === 'InterfaceDeclaration') return 'interface';
+        if (decl.getKindName() === 'TypeAliasDeclaration') return 'type';
+        if (decl.getKindName() === 'EnumDeclaration') return 'enum';
+        if (decl.getKindName() === 'VariableDeclaration') return 'variable';
+        return 'unknown';
+    }
+
+    private getSymbolTypeInfo(node: ts.Node): TypeInfo | null {
+        if (!this.checker) return null;
+
+        try {
+            const type = this.checker.getTypeAtLocation(node);
+            const typeString = this.checker.typeToString(type);
+            
+            // Check for type parameters (for generic types)
+            let typeParameters: string[] | undefined;
+            if (type.symbol && (type.symbol as any).typeParameters) {
+                typeParameters = (type.symbol as any).typeParameters.map((tp: ts.TypeParameter) => 
+                    tp.symbol ? tp.symbol.getName() : 'unknown'
+                );
+            }
+            
+            return {
+                type: typeString,
+                isPrimitive: type.flags === ts.TypeFlags.Number || 
+                            type.flags === ts.TypeFlags.String ||
+                            type.flags === ts.TypeFlags.Boolean,
+                isUnion: !!(type.flags & ts.TypeFlags.Union),
+                isIntersection: !!(type.flags & ts.TypeFlags.Intersection),
+                typeParameters
+            };
+        } catch {
+            return null;
+        }
     }
 
     private escapeRegex(str: string): string {

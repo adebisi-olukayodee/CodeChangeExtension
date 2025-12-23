@@ -36,7 +36,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.analyzeImpact = void 0;
+exports.analyzeImpactEnhanced = exports.analyzeImpactWithDiff = exports.analyzeImpact = void 0;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const ImpactReport_1 = require("../types/ImpactReport");
@@ -44,7 +44,16 @@ const DependencyAnalyzer_1 = require("../analyzers/DependencyAnalyzer");
 const TestFinder_1 = require("../analyzers/TestFinder");
 const LanguageAnalyzerFactory_1 = require("../analyzers/language/LanguageAnalyzerFactory");
 const CodeAnalyzer_1 = require("../analyzers/CodeAnalyzer"); // Fallback for unsupported languages
+const EnhancedReportFormatter_1 = require("../utils/EnhancedReportFormatter");
 async function analyzeImpact(params, debugLog) {
+    const result = await analyzeImpactWithDiff(params, debugLog);
+    return result.report;
+}
+exports.analyzeImpact = analyzeImpact;
+/**
+ * Analyze impact and return both standard report and snapshot diff (for enhanced reporting)
+ */
+async function analyzeImpactWithDiff(params, debugLog) {
     const { file, before, after, projectRoot } = params;
     const log = debugLog || ((msg) => console.log(`[PureImpactAnalyzer] ${msg}`));
     log(`========================================`);
@@ -55,7 +64,10 @@ async function analyzeImpact(params, debugLog) {
     if (before === after) {
         log(`✅ Before === After, returning empty report`);
         log(`========================================`);
-        return (0, ImpactReport_1.createEmptyReport)(file);
+        return {
+            report: (0, ImpactReport_1.createEmptyReport)(file),
+            snapshotDiff: undefined
+        };
     }
     log(`⚠️ Before !== After, analyzing changes...`);
     // Set project root for analyzers that need it
@@ -69,6 +81,7 @@ async function analyzeImpact(params, debugLog) {
     let changedFunctions = [];
     let changedClasses = [];
     let changedCodeAnalysis;
+    let snapshotDiff = undefined;
     if (languageAnalyzer) {
         // Use language-specific analyzer
         const analyzerName = languageAnalyzer.constructor.name;
@@ -76,23 +89,63 @@ async function analyzeImpact(params, debugLog) {
         log(`✅ Using language-specific analyzer: ${analyzerName} (${languageAnalyzer.getLanguage()})`);
         log(`   Supported extensions: ${supportedExts}`);
         log(`   File: ${file}`);
-        // Find changed elements using language-specific analyzer
-        const changedElements = await languageAnalyzer.findChangedElements(before, after, fullFilePath);
-        changedFunctions = changedElements.changedFunctions;
-        changedClasses = changedElements.changedClasses;
-        log(`Changed functions: ${JSON.stringify(changedFunctions)}`);
-        log(`Changed classes: ${JSON.stringify(changedClasses)}`);
-        // Get full analysis for downstream/test finding
-        const afterAnalysis = await languageAnalyzer.analyze(fullFilePath, after);
-        changedCodeAnalysis = {
-            functions: changedFunctions,
-            classes: changedClasses,
-            modules: afterAnalysis.modules,
-            imports: afterAnalysis.imports,
-            exports: afterAnalysis.exports,
-            complexity: afterAnalysis.functions.length + afterAnalysis.classes.length,
-            linesOfCode: after.split('\n').length
-        };
+        // Use snapshot-based approach if available (preferred)
+        if (languageAnalyzer.buildSnapshot && languageAnalyzer.diffSnapshots) {
+            log(`   Using snapshot-based analysis (AST + symbols + exports)`);
+            // Build snapshots
+            log(`Building BEFORE snapshot...`);
+            const beforeSnapshot = await languageAnalyzer.buildSnapshot(fullFilePath, before);
+            log(`BEFORE snapshot: ${beforeSnapshot.functions.length} functions, ${beforeSnapshot.classes.length} classes, ${beforeSnapshot.interfaces.length} interfaces`);
+            log(`Building AFTER snapshot...`);
+            const afterSnapshot = await languageAnalyzer.buildSnapshot(fullFilePath, after);
+            log(`AFTER snapshot: ${afterSnapshot.functions.length} functions, ${afterSnapshot.classes.length} classes, ${afterSnapshot.interfaces.length} interfaces`);
+            // Diff snapshots
+            log(`Diffing snapshots...`);
+            snapshotDiff = await languageAnalyzer.diffSnapshots(beforeSnapshot, afterSnapshot);
+            log(`Snapshot diff: ${snapshotDiff.changedSymbols.length} changed symbols, ${snapshotDiff.added.length} added, ${snapshotDiff.removed.length} removed, ${snapshotDiff.modified.length} modified`);
+            // Extract changed functions and classes from changed symbols
+            changedFunctions = snapshotDiff.changedSymbols
+                .filter(s => s.symbol.kind === 'function' || s.symbol.kind === 'method')
+                .map(s => s.symbol.name);
+            changedClasses = snapshotDiff.changedSymbols
+                .filter(s => s.symbol.kind === 'class')
+                .map(s => s.symbol.name);
+            // Also include breaking changes (export removals, type changes)
+            const breakingChanges = snapshotDiff.changedSymbols.filter(s => s.isBreaking);
+            log(`Breaking changes: ${breakingChanges.length}`);
+            log(`Changed functions: ${JSON.stringify(changedFunctions)}`);
+            log(`Changed classes: ${JSON.stringify(changedClasses)}`);
+            // Build code analysis from snapshot
+            changedCodeAnalysis = {
+                functions: changedFunctions,
+                classes: changedClasses,
+                modules: afterSnapshot.imports.map(i => i.module),
+                imports: afterSnapshot.imports.flatMap(i => i.symbols),
+                exports: afterSnapshot.exports.map(e => e.name),
+                complexity: afterSnapshot.functions.length + afterSnapshot.classes.length + afterSnapshot.interfaces.length,
+                linesOfCode: after.split('\n').length
+            };
+        }
+        else {
+            // Fallback to old findChangedElements method
+            log(`   Using legacy findChangedElements method`);
+            const changedElements = await languageAnalyzer.findChangedElements(before, after, fullFilePath);
+            changedFunctions = changedElements.changedFunctions;
+            changedClasses = changedElements.changedClasses;
+            log(`Changed functions: ${JSON.stringify(changedFunctions)}`);
+            log(`Changed classes: ${JSON.stringify(changedClasses)}`);
+            // Get full analysis for downstream/test finding
+            const afterAnalysis = await languageAnalyzer.analyze(fullFilePath, after);
+            changedCodeAnalysis = {
+                functions: changedFunctions,
+                classes: changedClasses,
+                modules: afterAnalysis.modules,
+                imports: afterAnalysis.imports,
+                exports: afterAnalysis.exports,
+                complexity: afterAnalysis.functions.length + afterAnalysis.classes.length,
+                linesOfCode: after.split('\n').length
+            };
+        }
     }
     else {
         // Fallback to generic CodeAnalyzer for unsupported languages
@@ -131,7 +184,10 @@ async function analyzeImpact(params, debugLog) {
     if (changedFunctions.length === 0 && changedClasses.length === 0) {
         log(`✅ No functions or classes changed, returning empty report`);
         log(`========================================`);
-        return (0, ImpactReport_1.createEmptyReport)(file);
+        return {
+            report: (0, ImpactReport_1.createEmptyReport)(file),
+            snapshotDiff
+        };
     }
     log(`⚠️ Found ${changedFunctions.length} changed functions, ${changedClasses.length} changed classes`);
     // Find downstream files
@@ -167,15 +223,49 @@ async function analyzeImpact(params, debugLog) {
             target
         }))
     ];
-    return {
+    const report = {
         sourceFile: file,
         functions: changedFunctions,
         downstreamFiles: relativeDownstreamFiles,
         tests: relativeTests,
         issues
     };
+    return {
+        report,
+        snapshotDiff
+    };
 }
-exports.analyzeImpact = analyzeImpact;
+exports.analyzeImpactWithDiff = analyzeImpactWithDiff;
+/**
+ * Generate enhanced impact report with detailed breaking changes
+ */
+async function analyzeImpactEnhanced(params, debugLog) {
+    const result = await analyzeImpactWithDiff(params, debugLog);
+    if (!result.snapshotDiff) {
+        // Fallback: create minimal enhanced report from standard report
+        return {
+            filePath: params.file,
+            breakingChanges: [],
+            impactedSymbols: result.report.functions,
+            downstreamFiles: result.report.downstreamFiles.map(f => ({
+                file: f,
+                reason: 'Depends on changed code'
+            })),
+            affectedTests: result.report.tests.map(t => ({
+                file: t,
+                reason: 'Tests changed code'
+            })),
+            summary: {
+                breakingCount: 0,
+                impactedSymbolsCount: result.report.functions.length,
+                downstreamCount: result.report.downstreamFiles.length,
+                affectedTestsCount: result.report.tests.length
+            }
+        };
+    }
+    return EnhancedReportFormatter_1.EnhancedReportFormatter.format(path.join(params.projectRoot, params.file), result.snapshotDiff, result.report, params.projectRoot);
+}
+exports.analyzeImpactEnhanced = analyzeImpactEnhanced;
 /**
  * Find functions that changed between before and after.
  *

@@ -1,0 +1,83 @@
+{
+  "filePath": "src/lib/index.ts",
+  "breakingChanges": [
+    {
+      "ruleId": "TSAPI-FN-001",
+      "severity": "breaking",
+      "symbol": "add",
+      "message": "Parameter 'b' changed from optional to required",
+      "before": "add(a: number, b?: number): number",
+      "after": "add(a: number, b: number): number",
+      "line": 15,
+      "context": {
+        "changeType": "signature-changed",
+        "isExported": true,
+        "kind": "function"
+      }
+    },
+    {
+      "ruleId": "TSAPI-FN-002",
+      "severity": "breaking",
+      "symbol": "calculateDiscount",
+      "message": "Parameter 'discount' was removed",
+      "before": "calculateDiscount(price: number, discount: number): number",
+      "after": "calculateDiscount(price: number): number",
+      "line": 23,
+      "context": {
+        "changeType": "signature-changed",
+        "isExported": true,
+        "kind": "function"
+      }
+    },
+    {
+      "ruleId": "TSAPI-FN-004",
+      "severity": "breaking",
+      "symbol": "getTotal",
+      "message": "Return type changed from 'number' to 'Promise<number>'",
+      "before": "getTotal(items: Item[]): number",
+      "after": "getTotal(items: Item[]): Promise<number>",
+      "line": 42,
+      "context": {
+        "changeType": "type-changed",
+        "isExported": true,
+        "kind": "function"
+      }
+    }
+  ],
+  "impactedSymbols": [
+    "add",
+    "calculateDiscount",
+    "getTotal"
+  ],
+  "downstreamFiles": [
+    {
+      "file": "src/app/consumer.ts",
+      "reason": "Imports or depends on changed symbols",
+      "dependentSymbols": ["add", "calculateDiscount"]
+    },
+    {
+      "file": "src/utils/calculator.ts",
+      "reason": "Imports or depends on changed symbols",
+      "dependentSymbols": ["getTotal"]
+    }
+  ],
+  "affectedTests": [
+    {
+      "file": "test/consumer.test.ts",
+      "reason": "Tests code that depends on changed symbols",
+      "testCases": ["should calculate total correctly", "should handle discount"]
+    },
+    {
+      "file": "test/calculator.test.ts",
+      "reason": "Tests code that depends on changed symbols",
+      "testCases": ["should get total asynchronously"]
+    }
+  ],
+  "summary": {
+    "breakingCount": 3,
+    "impactedSymbolsCount": 3,
+    "downstreamCount": 2,
+    "affectedTestsCount": 2
+  }
+}
+
