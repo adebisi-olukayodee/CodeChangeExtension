@@ -40,9 +40,10 @@ exports.analyzeImpact = void 0;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const ImpactReport_1 = require("../types/ImpactReport");
-const CodeAnalyzer_1 = require("../analyzers/CodeAnalyzer");
 const DependencyAnalyzer_1 = require("../analyzers/DependencyAnalyzer");
 const TestFinder_1 = require("../analyzers/TestFinder");
+const LanguageAnalyzerFactory_1 = require("../analyzers/language/LanguageAnalyzerFactory");
+const CodeAnalyzer_1 = require("../analyzers/CodeAnalyzer"); // Fallback for unsupported languages
 async function analyzeImpact(params, debugLog) {
     const { file, before, after, projectRoot } = params;
     const log = debugLog || ((msg) => console.log(`[PureImpactAnalyzer] ${msg}`));
@@ -57,26 +58,75 @@ async function analyzeImpact(params, debugLog) {
         return (0, ImpactReport_1.createEmptyReport)(file);
     }
     log(`⚠️ Before !== After, analyzing changes...`);
-    const codeAnalyzer = new CodeAnalyzer_1.CodeAnalyzer();
+    // Set project root for analyzers that need it
+    LanguageAnalyzerFactory_1.LanguageAnalyzerFactory.setProjectRoot(projectRoot);
+    const fullFilePath = path.join(projectRoot, file);
+    const fileExt = path.extname(fullFilePath).toLowerCase();
+    log(`File extension: ${fileExt}`);
+    const languageAnalyzer = LanguageAnalyzerFactory_1.LanguageAnalyzerFactory.getAnalyzer(fullFilePath);
     const dependencyAnalyzer = new DependencyAnalyzer_1.DependencyAnalyzer();
     const testFinder = new TestFinder_1.TestFinder();
-    // Analyze both versions
-    log(`Analyzing BEFORE version...`);
-    const beforeAnalysis = await codeAnalyzer.analyzeFile(file, before);
-    log(`BEFORE analysis: ${beforeAnalysis.functions.length} functions, ${beforeAnalysis.classes.length} classes`);
-    log(`BEFORE functions: ${JSON.stringify(beforeAnalysis.functions)}`);
-    log(`Analyzing AFTER version...`);
-    const afterAnalysis = await codeAnalyzer.analyzeFile(file, after);
-    log(`AFTER analysis: ${afterAnalysis.functions.length} functions, ${afterAnalysis.classes.length} classes`);
-    log(`AFTER functions: ${JSON.stringify(afterAnalysis.functions)}`);
-    // Find changed functions (in after but different in before, or removed)
-    log(`Finding changed functions...`);
-    const changedFunctions = findChangedFunctions(beforeAnalysis.functions, afterAnalysis.functions, before, after, log);
-    log(`Changed functions: ${JSON.stringify(changedFunctions)}`);
-    // Find changed classes
-    log(`Finding changed classes...`);
-    const changedClasses = findChangedClasses(beforeAnalysis.classes, afterAnalysis.classes, before, after);
-    log(`Changed classes: ${JSON.stringify(changedClasses)}`);
+    let changedFunctions = [];
+    let changedClasses = [];
+    let changedCodeAnalysis;
+    if (languageAnalyzer) {
+        // Use language-specific analyzer
+        const analyzerName = languageAnalyzer.constructor.name;
+        const supportedExts = languageAnalyzer.getSupportedExtensions().join(', ');
+        log(`✅ Using language-specific analyzer: ${analyzerName} (${languageAnalyzer.getLanguage()})`);
+        log(`   Supported extensions: ${supportedExts}`);
+        log(`   File: ${file}`);
+        // Find changed elements using language-specific analyzer
+        const changedElements = await languageAnalyzer.findChangedElements(before, after, fullFilePath);
+        changedFunctions = changedElements.changedFunctions;
+        changedClasses = changedElements.changedClasses;
+        log(`Changed functions: ${JSON.stringify(changedFunctions)}`);
+        log(`Changed classes: ${JSON.stringify(changedClasses)}`);
+        // Get full analysis for downstream/test finding
+        const afterAnalysis = await languageAnalyzer.analyze(fullFilePath, after);
+        changedCodeAnalysis = {
+            functions: changedFunctions,
+            classes: changedClasses,
+            modules: afterAnalysis.modules,
+            imports: afterAnalysis.imports,
+            exports: afterAnalysis.exports,
+            complexity: afterAnalysis.functions.length + afterAnalysis.classes.length,
+            linesOfCode: after.split('\n').length
+        };
+    }
+    else {
+        // Fallback to generic CodeAnalyzer for unsupported languages
+        log(`⚠️ No language-specific analyzer found for extension: ${fileExt}`);
+        log(`   Falling back to generic CodeAnalyzer (regex-based parsing)`);
+        log(`   Supported languages: ${LanguageAnalyzerFactory_1.LanguageAnalyzerFactory.getSupportedLanguages().join(', ')}`);
+        const codeAnalyzer = new CodeAnalyzer_1.CodeAnalyzer();
+        // Analyze both versions
+        log(`Analyzing BEFORE version...`);
+        const beforeAnalysis = await codeAnalyzer.analyzeFile(file, before);
+        log(`BEFORE analysis: ${beforeAnalysis.functions.length} functions, ${beforeAnalysis.classes.length} classes`);
+        log(`BEFORE functions: ${JSON.stringify(beforeAnalysis.functions)}`);
+        log(`Analyzing AFTER version...`);
+        const afterAnalysis = await codeAnalyzer.analyzeFile(file, after);
+        log(`AFTER analysis: ${afterAnalysis.functions.length} functions, ${afterAnalysis.classes.length} classes`);
+        log(`AFTER functions: ${JSON.stringify(afterAnalysis.functions)}`);
+        // Find changed functions (in after but different in before, or removed)
+        log(`Finding changed functions...`);
+        changedFunctions = findChangedFunctions(beforeAnalysis.functions, afterAnalysis.functions, before, after, log);
+        log(`Changed functions: ${JSON.stringify(changedFunctions)}`);
+        // Find changed classes
+        log(`Finding changed classes...`);
+        changedClasses = findChangedClasses(beforeAnalysis.classes, afterAnalysis.classes, before, after);
+        log(`Changed classes: ${JSON.stringify(changedClasses)}`);
+        changedCodeAnalysis = {
+            functions: changedFunctions,
+            classes: changedClasses,
+            modules: afterAnalysis.modules,
+            imports: afterAnalysis.imports,
+            exports: afterAnalysis.exports,
+            complexity: afterAnalysis.complexity,
+            linesOfCode: afterAnalysis.linesOfCode
+        };
+    }
     // If nothing changed, return empty report
     if (changedFunctions.length === 0 && changedClasses.length === 0) {
         log(`✅ No functions or classes changed, returning empty report`);
@@ -84,18 +134,7 @@ async function analyzeImpact(params, debugLog) {
         return (0, ImpactReport_1.createEmptyReport)(file);
     }
     log(`⚠️ Found ${changedFunctions.length} changed functions, ${changedClasses.length} changed classes`);
-    // Build code analysis result for downstream/test finding
-    const changedCodeAnalysis = {
-        functions: changedFunctions,
-        classes: changedClasses,
-        modules: afterAnalysis.modules,
-        imports: afterAnalysis.imports,
-        exports: afterAnalysis.exports,
-        complexity: afterAnalysis.complexity,
-        linesOfCode: afterAnalysis.linesOfCode
-    };
     // Find downstream files
-    const fullFilePath = path.join(projectRoot, file);
     const downstreamFiles = await dependencyAnalyzer.findDownstreamComponents(fullFilePath, changedCodeAnalysis);
     // Convert to relative paths
     const relativeDownstreamFiles = downstreamFiles.map(f => path.relative(projectRoot, f));
