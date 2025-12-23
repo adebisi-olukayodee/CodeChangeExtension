@@ -1,0 +1,362 @@
+{
+  "name": "realtime-impact-analyzer",
+  "displayName": "Real-Time Impact Analyzer",
+  "description": "Real-time code impact analysis with intelligent test discovery and execution",
+  "version": "1.0.0",
+  "publisher": "OpsConverge",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Testing",
+    "Other",
+    "Linters"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "impactAnalyzer.analyzeCurrentFile",
+        "title": "Analyze Current File Impact",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.analyzeWorkspace",
+        "title": "Analyze Workspace Impact",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.runAffectedTests",
+        "title": "Run Affected Tests",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.runPreCommitTests",
+        "title": "Run Pre-Commit Tests",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.showImpactHistory",
+        "title": "Show Impact History",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.toggleAutoAnalysis",
+        "title": "Toggle Auto-Analysis",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.toggleAutoRefresh",
+        "title": "Toggle Auto-Refresh on Save",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.refreshCiResults",
+        "title": "Refresh CI Test Results",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.clearCache",
+        "title": "Clear Analysis Cache",
+        "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.showSettings",
+        "title": "Show Settings",
+        "category": "Impact Analyzer"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "impactAnalyzer.analyzeCurrentFile",
+          "when": "resourceScheme == file",
+          "group": "impact@1"
+        },
+        {
+          "command": "impactAnalyzer.runAffectedTests",
+          "when": "resourceScheme == file",
+          "group": "impact@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "impactAnalyzer.analyzeCurrentFile",
+          "when": "resourceScheme == file",
+          "group": "impact@1"
+        },
+        {
+          "command": "impactAnalyzer.runAffectedTests",
+          "when": "resourceScheme == file",
+          "group": "impact@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "impactAnalyzer.analyzeCurrentFile",
+          "when": "resourceScheme == file",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "impactAnalyzerView",
+          "name": "Impact Analysis",
+          "when": "workspaceFolderCount > 0"
+        }
+      ],
+      "impactAnalyzer": [
+        {
+          "id": "impactAnalyzer.welcome",
+          "name": "Welcome",
+          "type": "webview",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "impactAnalyzer",
+          "title": "Impact Analyzer",
+          "icon": "$(graph)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Real-Time Impact Analyzer",
+      "properties": {
+        "impactAnalyzer.autoAnalysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic impact analysis on file save"
+        },
+        "impactAnalyzer.autoRefreshOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically refresh the Impact Analyzer view after saving a supported file"
+        },
+        "impactAnalyzer.autoRefreshDelay": {
+          "type": "number",
+          "default": 400,
+          "description": "Delay in milliseconds before refreshing analysis after file save when auto-refresh is enabled"
+        },
+        "impactAnalyzer.backendUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the Impact Analyzer backend/dashboard (e.g., https://dashboard.yourcompany.com)"
+        },
+        "impactAnalyzer.apiToken": {
+          "type": "string",
+          "default": "",
+          "description": "API token used to authenticate requests to the Impact Analyzer backend"
+        },
+        "impactAnalyzer.teamId": {
+          "type": "string",
+          "default": "",
+          "description": "Team identifier used when requesting CI test results"
+        },
+        "impactAnalyzer.repoFullName": {
+          "type": "string",
+          "default": "",
+          "description": "Repository full name (owner/repo) associated with CI runs"
+        },
+        "impactAnalyzer.enableCiPolling": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable background polling for CI test results"
+        },
+        "impactAnalyzer.ciPollingInterval": {
+          "type": "number",
+          "default": 180000,
+          "description": "Polling interval in milliseconds for refreshing CI test results"
+        },
+        "impactAnalyzer.analysisDelay": {
+          "type": "number",
+          "default": 500,
+          "description": "Delay in milliseconds before running analysis after file save"
+        },
+        "impactAnalyzer.showInlineAnnotations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show impact annotations inline in the editor"
+        },
+        "impactAnalyzer.testFrameworks": {
+          "type": "array",
+          "default": [
+            "jest",
+            "mocha",
+            "pytest",
+            "junit",
+            "cypress",
+            "playwright"
+          ],
+          "description": "Supported test frameworks"
+        },
+        "impactAnalyzer.testPatterns": {
+          "type": "array",
+          "default": [
+            "**/*.test.*",
+            "**/*.spec.*",
+            "**/test/**",
+            "**/tests/**",
+            "**/__tests__/**"
+          ],
+          "description": "Test file patterns"
+        },
+        "impactAnalyzer.sourcePatterns": {
+          "type": "array",
+          "default": [
+            "**/*.js",
+            "**/*.jsx",
+            "**/*.ts",
+            "**/*.tsx",
+            "**/*.py",
+            "**/*.java",
+            "**/*.cs",
+            "**/*.go",
+            "**/*.rs"
+          ],
+          "description": "Source file patterns to analyze"
+        },
+        "impactAnalyzer.maxAnalysisTime": {
+          "type": "number",
+          "default": 10000,
+          "description": "Maximum time in milliseconds to spend on analysis"
+        },
+        "impactAnalyzer.cacheEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable analysis result caching"
+        },
+        "impactAnalyzer.notifications": {
+          "type": "object",
+          "default": {
+            "onAnalysisComplete": true,
+            "onTestFailures": true,
+            "onHighImpactChanges": true
+          },
+          "description": "Notification preferences"
+        },
+        "impactAnalyzer.gitIntegration": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Git integration for change detection"
+        },
+        "impactAnalyzer.preCommitHooks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable pre-commit test hooks"
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "impactAnalyzer.analyzeCurrentFile",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "impactAnalyzer.runAffectedTests",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "impactAnalyzer.navUp",
+        "key": "up",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navDown",
+        "key": "down",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navExpand",
+        "key": "right",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navCollapse",
+        "key": "left",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navToggle",
+        "key": "space",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navRunTests",
+        "key": "r",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navEdit",
+        "key": "e",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navAnalyze",
+        "key": "a",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navOpenTest",
+        "key": "t",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navDeps",
+        "key": "d",
+        "when": "focusedView == impactAnalyzerView"
+      },
+      {
+        "command": "impactAnalyzer.navGoto",
+        "key": "g",
+        "when": "focusedView == impactAnalyzerView"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "npm run compile && node ./out/test/runTest.js",
+    "test:watch": "npm run watch & node --watch ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/babel__traverse": "^7.28.0",
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^9.0.0",
+    "@types/node": "16.x",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^5.42.0",
+    "@typescript-eslint/parser": "^5.42.0",
+    "@vscode/test-electron": "^2.2.0",
+    "chai": "^6.2.1",
+    "eslint": "^8.26.0",
+    "glob": "^7.1.6",
+    "mocha": "^9.1.2",
+    "typescript": "^4.9.5"
+  },
+  "dependencies": {
+    "@babel/generator": "^7.28.3",
+    "@babel/parser": "^7.28.4",
+    "@babel/traverse": "^7.28.4",
+    "@babel/types": "^7.28.4",
+    "axios": "^1.6.0",
+    "chokidar": "^3.5.3",
+    "glob": "^8.1.0",
+    "ts-morph": "^27.0.0"
+  }
+}
