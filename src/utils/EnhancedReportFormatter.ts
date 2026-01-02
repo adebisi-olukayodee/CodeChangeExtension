@@ -11,7 +11,7 @@ import {
     ImpactSummary,
     BreakingChangeRule
 } from '../types/EnhancedImpactReport';
-import { SymbolChange, SnapshotDiff } from '../analyzers/language/SymbolSnapshot';
+import { SymbolChange, SnapshotDiff, ExportInfo, ExportChange } from '../analyzers/language/SymbolSnapshot';
 import { ImpactReport } from '../types/ImpactReport';
 
 export class EnhancedReportFormatter {
@@ -25,7 +25,33 @@ export class EnhancedReportFormatter {
         projectRoot: string
     ): EnhancedImpactReport {
         const breakingChanges = this.extractBreakingChanges(snapshotDiff);
-        const impactedSymbols = this.extractImpactedSymbols(snapshotDiff);
+        
+        // Option A: Derive impactedSymbols from findings (breaking changes)
+        // This ensures consistency - every breaking change's symbol is in impactedSymbols
+        const impactedSymbolsSet = new Set<string>();
+        
+        for (const breakingChange of breakingChanges) {
+            if (breakingChange.symbol) {
+                // Add the primary symbol (e.g., "Client.ping")
+                // This is the precise symbol that changed - keep as primary for tests and UI
+                impactedSymbolsSet.add(breakingChange.symbol);
+                
+                // For class method removals, also include the container class for broader matching
+                // This helps with dependency analysis and UI grouping while keeping precision
+                // Primary: Client.ping (precision), Also: Client (broader matching / UI grouping)
+                if (breakingChange.ruleId === BreakingChangeRule.CLS_METHOD_REMOVED) {
+                    // Extract container class name from qualified method name (e.g., "Client.ping" -> "Client")
+                    const parts = breakingChange.symbol.split('.');
+                    if (parts.length > 1) {
+                        const containerName = parts.slice(0, -1).join('.');
+                        impactedSymbolsSet.add(containerName);
+                    }
+                }
+            }
+        }
+        
+        const impactedSymbols = Array.from(impactedSymbolsSet).sort();
+        
         const downstreamFiles = this.formatDownstreamFiles(impactReport.downstreamFiles, projectRoot);
         const affectedTests = this.formatAffectedTests(impactReport.tests, projectRoot);
 
@@ -48,6 +74,10 @@ export class EnhancedReportFormatter {
      * Extract breaking changes from SnapshotDiff
      */
     private static extractBreakingChanges(diff: SnapshotDiff): BreakingChange[] {
+        console.log(`[EnhancedReportFormatter] Extracting breaking changes from diff`);
+        console.log(`[EnhancedReportFormatter]   - Changed symbols: ${diff.changedSymbols.length}`);
+        console.log(`[EnhancedReportFormatter]   - Export changes: ${diff.exportChanges.removed.length} removed, ${diff.exportChanges.modified.length} modified`);
+        
         const breakingChanges: BreakingChange[] = [];
 
         for (const change of diff.changedSymbols) {
@@ -76,7 +106,9 @@ export class EnhancedReportFormatter {
             });
         }
 
-        // Also check export removals and re-export changes
+        // Export removals are the source of truth for TSAPI-EXP-001
+        // Symbols in removed exports are suppressed from function/class/type removal rules
+        // So we always emit TSAPI-EXP-001 for removed exports
         for (const removedExport of diff.exportChanges.removed) {
             breakingChanges.push({
                 ruleId: BreakingChangeRule.EXPORT_REMOVED,
@@ -94,17 +126,51 @@ export class EnhancedReportFormatter {
         }
 
         // Check for re-export changes (TSAPI-EXP-002)
+        console.log(`[EnhancedReportFormatter] Processing ${diff.exportChanges.modified.length} modified exports`);
+        console.log(`[EnhancedReportFormatter] Modified exports details:`, JSON.stringify(diff.exportChanges.modified, null, 2));
         for (const modifiedExport of diff.exportChanges.modified) {
-            if (modifiedExport.sourceModule) {
-                breakingChanges.push({
-                    ruleId: BreakingChangeRule.EXPORT_TYPE_CHANGED,
-                    severity: 'breaking',
-                    symbol: modifiedExport.name,
-                    message: `Re-export '${modifiedExport.name}' changed`,
-                    before: `export { ${modifiedExport.exportedName || modifiedExport.name}${modifiedExport.localName ? ` as ${modifiedExport.localName}` : ''} } from '${modifiedExport.sourceModule}'`,
-                    after: `export { ${modifiedExport.exportedName || modifiedExport.name}${modifiedExport.localName ? ` as ${modifiedExport.localName}` : ''} } from '${modifiedExport.sourceModule}'`,
-                    line: modifiedExport.line
-                });
+            // Check if it's an ExportChange object (with before/after) or just ExportInfo
+            if ('before' in modifiedExport && 'after' in modifiedExport) {
+                // Enhanced format with before/after
+                const change = modifiedExport as { before: ExportInfo; after: ExportInfo };
+                const before = change.before;
+                const after = change.after;
+                
+                console.log(`[EnhancedReportFormatter] Processing export change: name='${after.name}', before sourceName='${before.sourceName}', after sourceName='${after.sourceName}'`);
+                
+                if (after.sourceModule) {
+                    // This is a re-export change - sourceModule or sourceName changed
+                    const beforeSourceName = before.sourceName || before.name;
+                    const afterSourceName = after.sourceName || after.name;
+                    
+                    const breakingChange: BreakingChange = {
+                        ruleId: BreakingChangeRule.EXPORT_TYPE_CHANGED,
+                        severity: 'breaking',
+                        symbol: after.name, // Public API name (what consumers see - 'x' in both cases)
+                        message: `Re-export '${after.name}' changed source from '${beforeSourceName}' to '${afterSourceName}' in '${after.sourceModule}'`,
+                        before: `export { ${beforeSourceName} as ${after.name} } from '${before.sourceModule || after.sourceModule}'`,
+                        after: `export { ${afterSourceName} as ${after.name} } from '${after.sourceModule}'`,
+                        line: after.line
+                    };
+                    
+                    breakingChanges.push(breakingChange);
+                    console.log(`[EnhancedReportFormatter] ✅ Emitted TSAPI-EXP-002 for '${after.name}'`);
+                }
+            } else {
+                // Legacy format - just ExportInfo (for non-re-export changes)
+                const exportInfo = modifiedExport as ExportInfo;
+                if (exportInfo.sourceModule) {
+                    // Fallback for re-export changes in legacy format
+                    breakingChanges.push({
+                        ruleId: BreakingChangeRule.EXPORT_TYPE_CHANGED,
+                        severity: 'breaking',
+                        symbol: exportInfo.name,
+                        message: `Re-export '${exportInfo.name}' changed`,
+                        before: `export { ... } from '${exportInfo.sourceModule}'`,
+                        after: `export { ${exportInfo.sourceName || exportInfo.name} as ${exportInfo.name} } from '${exportInfo.sourceModule}'`,
+                        line: exportInfo.line
+                    });
+                }
             }
         }
 
@@ -223,6 +289,7 @@ export class EnhancedReportFormatter {
 
     /**
      * Extract list of impacted symbol names
+     * @deprecated Use breakingChanges.map(f => f.symbol) instead - this ensures consistency
      */
     private static extractImpactedSymbols(diff: SnapshotDiff): string[] {
         const symbols = new Set<string>();

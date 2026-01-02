@@ -29,8 +29,15 @@ var BreakingChangeRule;
     BreakingChangeRule["IFACE_PROPERTY_TYPE_CHANGED"] = "TSAPI-IF-003";
     BreakingChangeRule["IFACE_REMOVED"] = "TSAPI-IF-004";
     // Type alias changes
+    // Following the user's recommended mapping:
+    // TYPE-001: property removed
+    // TYPE-002: type definition changed (generic fallback)
+    // TYPE-003: property optional → required
+    // TYPE-004: property type changed/narrowed
     BreakingChangeRule["TYPE_REMOVED"] = "TSAPI-TYPE-001";
     BreakingChangeRule["TYPE_DEFINITION_CHANGED"] = "TSAPI-TYPE-002";
+    BreakingChangeRule["TYPE_PROPERTY_REQUIRED"] = "TSAPI-TYPE-003";
+    BreakingChangeRule["TYPE_PROPERTY_TYPE_CHANGED"] = "TSAPI-TYPE-004";
     // Enum changes
     BreakingChangeRule["ENUM_MEMBER_REMOVED"] = "TSAPI-ENUM-001";
     BreakingChangeRule["ENUM_REMOVED"] = "TSAPI-ENUM-002";

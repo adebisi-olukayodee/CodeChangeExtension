@@ -62,19 +62,21 @@ export interface ParameterInfo {
 }
 
 export interface ExportInfo {
-    /** Exported symbol name (local name if re-exported) */
+    /** Exported symbol name (public API name - what consumers see) */
     name: string;
     /** Export type: 'named' | 'default' | 'namespace' */
     type: 'named' | 'default' | 'namespace';
-    /** What it exports (function, class, etc.) */
+    /** What it exports (function, class, etc.) or 're-export' */
     kind: string;
     /** Line number */
     line: number;
     /** Source module (for re-exports: export { x } from './module') */
     sourceModule?: string;
-    /** Original exported name from source module (for re-exports) */
+    /** Source name from the source module (propertyName in export { y as x } - 'y' is sourceName) */
+    sourceName?: string;
+    /** Original exported name from source module (for re-exports) - deprecated, use sourceName */
     exportedName?: string;
-    /** Local name (if re-exported as different name: export { x as y }) */
+    /** Local name (if re-exported as different name: export { x as y }) - deprecated, use sourceName */
     localName?: string;
 }
 
@@ -119,6 +121,13 @@ export interface SymbolChange {
     metadata?: Record<string, any>;
 }
 
+export interface ExportChange {
+    /** After state (current) */
+    after: ExportInfo;
+    /** Before state (previous) */
+    before: ExportInfo;
+}
+
 export interface SnapshotDiff {
     /** Changed symbols */
     changedSymbols: SymbolChange[];
@@ -132,7 +141,7 @@ export interface SnapshotDiff {
     exportChanges: {
         added: ExportInfo[];
         removed: ExportInfo[];
-        modified: ExportInfo[];
+        modified: ExportInfo[] | ExportChange[]; // Can be either format for backward compatibility
     };
 }
 

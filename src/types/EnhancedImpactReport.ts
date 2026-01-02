@@ -92,8 +92,15 @@ export enum BreakingChangeRule {
     IFACE_REMOVED = 'TSAPI-IF-004',          // Interface removed
     
     // Type alias changes
-    TYPE_REMOVED = 'TSAPI-TYPE-001',         // Type alias removed
-    TYPE_DEFINITION_CHANGED = 'TSAPI-TYPE-002', // Type definition changed
+    // Following the user's recommended mapping:
+    // TYPE-001: property removed
+    // TYPE-002: type definition changed (generic fallback)
+    // TYPE-003: property optional → required
+    // TYPE-004: property type changed/narrowed
+    TYPE_REMOVED = 'TSAPI-TYPE-001',         // Type alias removed (entire type) - reusing TYPE-001
+    TYPE_DEFINITION_CHANGED = 'TSAPI-TYPE-002', // Type definition changed (generic fallback for non-object-literal types)
+    TYPE_PROPERTY_REQUIRED = 'TSAPI-TYPE-003', // Type property changed from optional to required
+    TYPE_PROPERTY_TYPE_CHANGED = 'TSAPI-TYPE-004', // Type property type changed/narrowed
     
     // Enum changes
     ENUM_MEMBER_REMOVED = 'TSAPI-ENUM-001',  // Enum member removed
