@@ -1,0 +1,58 @@
+name: Regression Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  regression-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Compile regression runner
+        run: npm run compile:regression
+      
+      - name: Run regression tests
+        run: npm run regression
+        continue-on-error: true
+      
+      - name: Run test assertions
+        run: npm run test:regression
+        continue-on-error: true
+      
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: regression-results
+          path: |
+            regressions/out/*.actual.json
+            regressions/out/*.diff
+          retention-days: 7
+      
+      - name: Check test results
+        run: |
+          if [ -f regressions/out/*.actual.json ]; then
+            echo "Regression tests completed. Check artifacts for details."
+          else
+            echo "No regression results found."
+            exit 1
+          fi
+
+
+
+

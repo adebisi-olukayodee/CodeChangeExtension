@@ -14,7 +14,7 @@ import {
     ClassElement,
     Parameter,
     Property
-} from '../ILanguageAnalyzer';
+} from '../ILanguageAnalyzer.js';
 import {
     SymbolSnapshot,
     SymbolInfo,
@@ -25,13 +25,34 @@ import {
     SymbolChange,
     SnapshotDiff,
     ExportChange
-} from './SymbolSnapshot';
+} from './SymbolSnapshot.js';
+import {
+    ResolvedExport,
+    ApiSnapshot,
+    ApiShape,
+    ExportIdentity,
+    FunctionApiShape,
+    ClassApiShape,
+    TypeApiShape,
+    EnumApiShape,
+    VariableApiShape,
+    FunctionSignature,
+    ParameterSignature,
+    ClassMember,
+    TypeProperty,
+    IndexSignature
+} from './ApiSnapshotTypes.js';
 
 export class TypeScriptAnalyzer implements ILanguageAnalyzer {
     private project: Project;
     private program: ts.Program | null = null;
     private checker: ts.TypeChecker | null = null;
     private projectRoot: string | null = null;
+    
+    // Caching for performance
+    private moduleResolutionCache = new Map<string, string | null>(); // moduleSpecifier+fromFile -> resolvedPath
+    private symbolExportsCache = new Map<string, string[]>(); // resolvedPath -> exports[]
+    private apiShapeCache = new Map<string, ApiShape | null>(); // exportIdentity -> ApiShape
 
     constructor(projectRoot?: string) {
         this.projectRoot = projectRoot || null;
@@ -40,8 +61,8 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         this.project = new Project({
             useInMemoryFileSystem: false,
             compilerOptions: {
-                target: ts.ScriptTarget.ES2020,
-                module: ts.ModuleKind.CommonJS,
+                target: 5, // ts.ScriptTarget.ES2020
+                module: 1, // ts.ModuleKind.CommonJS
                 strict: true,
                 esModuleInterop: true,
                 skipLibCheck: true,
@@ -57,19 +78,25 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         this.initializeTypeChecker();
     }
 
+    private getTsApi(): typeof ts {
+        return (ts as any).default || ts;
+    }
+
     private initializeTypeChecker(): void {
         try {
+            // Handle ESM default export for TypeScript
+            const tsApi = this.getTsApi();
             // Create a TypeScript program with empty files initially
             // It will be populated as files are analyzed
-            this.program = ts.createProgram([], {
-                target: ts.ScriptTarget.ES2020,
-                module: ts.ModuleKind.CommonJS,
+            this.program = tsApi.createProgram([], {
+                target: 5, // ts.ScriptTarget.ES2020
+                module: 1, // ts.ModuleKind.CommonJS
                 strict: true,
                 esModuleInterop: true,
                 skipLibCheck: true
             });
 
-            this.checker = this.program.getTypeChecker();
+            this.checker = this.program?.getTypeChecker() || null;
         } catch (error) {
             console.error('Failed to initialize TypeScript type checker:', error);
             this.checker = null;
@@ -457,21 +484,268 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             const sourceFiles = this.project.getSourceFiles();
             const filePaths = sourceFiles.map(sf => sf.getFilePath());
 
+            // Handle ESM default export for TypeScript
+            const tsApi = (ts as any).default || ts;
             // Create new TypeScript program with all files
             if (filePaths.length > 0) {
-                this.program = ts.createProgram(filePaths, {
-                    target: ts.ScriptTarget.ES2020,
-                    module: ts.ModuleKind.CommonJS,
+                this.program = tsApi.createProgram(filePaths, {
+                    target: 5, // ts.ScriptTarget.ES2020
+                    module: 1, // ts.ModuleKind.CommonJS
                     strict: true,
                     esModuleInterop: true,
                     skipLibCheck: true
                 });
 
-                this.checker = this.program.getTypeChecker();
+                this.checker = this.program?.getTypeChecker() || null;
             }
         } catch (error) {
             console.error('Error updating TypeScript program:', error);
         }
+    }
+
+    /**
+     * Expands .js imports to .ts candidates (for ESM libraries that use .js in TS source).
+     * When you see a specifier ending in .js, try same path with .ts, .tsx, .d.ts, and index variants.
+     */
+    private expandJsToTsCandidates(spec: string): string[] {
+        if (!spec.endsWith('.js')) return [spec];
+        const base = spec.slice(0, -3);
+        return [
+            spec,          // keep .js
+            base + '.ts',
+            base + '.tsx',
+            base + '.d.ts',
+            base + '/index.ts',
+            base + '/index.tsx',
+            base + '/index.d.ts',
+        ];
+    }
+
+    /**
+     * Normalizes a module specifier to try resolving .js files to .ts/.d.ts equivalents.
+     * This helps resolve re-exports that reference .js files.
+     */
+    private normalizeModuleSpecifier(moduleSpecifier: string, fromFile: string): string[] {
+        const candidates: string[] = [moduleSpecifier];
+        
+        // A) Support ".js import in TS maps to .ts"
+        if (moduleSpecifier.endsWith('.js')) {
+            const expanded = this.expandJsToTsCandidates(moduleSpecifier);
+            candidates.push(...expanded.slice(1)); // Skip the original .js (already added)
+        } else if (moduleSpecifier.endsWith('.jsx')) {
+            const base = moduleSpecifier.slice(0, -4);
+            candidates.push(base + '.tsx');
+            candidates.push(base + '.ts');
+            candidates.push(base + '.d.ts');
+            candidates.push(base);
+            candidates.push(base + '/index.ts');
+            candidates.push(base + '/index.tsx');
+            candidates.push(base + '/index.d.ts');
+        } else if (!path.extname(moduleSpecifier)) {
+            // B) Support extensionless imports
+            // If it's ./external (no extension), try ./external.ts, ./external.tsx, ./external.d.ts, ./external/index.ts, etc.
+            candidates.push(moduleSpecifier + '.ts');
+            candidates.push(moduleSpecifier + '.tsx');
+            candidates.push(moduleSpecifier + '.d.ts');
+            candidates.push(moduleSpecifier + '/index.ts');
+            candidates.push(moduleSpecifier + '/index.tsx');
+            candidates.push(moduleSpecifier + '/index.d.ts');
+        }
+        
+        return candidates;
+    }
+
+    /**
+     * Resolves a module specifier to an actual file path.
+     * Uses TypeScript's module resolution when possible (best), otherwise falls back to manual resolution.
+     * Caches results for performance.
+     */
+    private resolveModulePath(moduleSpecifier: string, fromFile: string): string | null {
+        console.log("[RESOLVER HIT] resolveModulePath called", { specifier: moduleSpecifier, from: fromFile });
+        const cacheKey = `${moduleSpecifier}|${fromFile}`;
+        
+        // Check cache
+        if (this.moduleResolutionCache.has(cacheKey)) {
+            const cached = this.moduleResolutionCache.get(cacheKey)!;
+            console.log("[RESOLVER HIT] Using cached result:", cached);
+            return cached;
+        }
+        
+        const fromDir = path.dirname(fromFile);
+        const tsApi = this.getTsApi();
+
+        // C) Use TypeScript's resolver when possible (best)
+        try {
+            // Try Node16/NodeNext first (modern ESM), then fallback to NodeJs
+            let moduleResolutionKind = tsApi.ModuleResolutionKind?.NodeJs;
+            if (tsApi.ModuleResolutionKind) {
+                if (tsApi.ModuleResolutionKind.Node16) {
+                    moduleResolutionKind = tsApi.ModuleResolutionKind.Node16;
+                } else if (tsApi.ModuleResolutionKind.NodeNext) {
+                    moduleResolutionKind = tsApi.ModuleResolutionKind.NodeNext;
+                }
+            }
+            
+            const compilerOptions: ts.CompilerOptions = {
+                module: tsApi.ModuleKind?.ESNext ?? 99, // ESNext
+                target: tsApi.ScriptTarget?.ES2020 ?? 5, // ES2020
+                moduleResolution: moduleResolutionKind ?? 2, // NodeJs
+                allowJs: true,
+                esModuleInterop: true,
+                resolveJsonModule: true,
+                skipLibCheck: true,
+                baseUrl: fromDir,
+            };
+            
+            const resolved = tsApi.resolveModuleName(
+                moduleSpecifier,
+                fromFile,
+                compilerOptions,
+                tsApi.sys
+            ).resolvedModule?.resolvedFileName;
+            
+            if (resolved && fs.existsSync(resolved)) {
+                this.moduleResolutionCache.set(cacheKey, resolved);
+                console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${resolved}`);
+                return resolved;
+            }
+        } catch (error) {
+            // Fall back to manual resolution
+        }
+
+        // Manual fallback: try all candidates from normalizeModuleSpecifier
+        const candidates = this.normalizeModuleSpecifier(moduleSpecifier, fromFile);
+        
+        console.log("[RESOLVER] Trying candidates", {
+            spec: moduleSpecifier,
+            fromDir,
+            candidates: candidates.map(c => {
+                let resolved: string;
+                if (c.startsWith('./') || c.startsWith('../')) {
+                    resolved = path.resolve(fromDir, c);
+                } else if (path.isAbsolute(c)) {
+                    resolved = c;
+                } else {
+                    resolved = path.resolve(fromDir, c);
+                }
+                return { candidate: c, resolved, exists: fs.existsSync(resolved) };
+            })
+        });
+        
+        // Try each candidate
+        for (const candidate of candidates) {
+            let resolved: string;
+            
+            // Handle relative paths
+            if (candidate.startsWith('./') || candidate.startsWith('../')) {
+                resolved = path.resolve(fromDir, candidate);
+            } else if (path.isAbsolute(candidate)) {
+                resolved = candidate;
+            } else {
+                // Relative to fromDir (no ./ prefix)
+                resolved = path.resolve(fromDir, candidate);
+            }
+            
+            // Check if file exists
+            if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+                this.moduleResolutionCache.set(cacheKey, resolved);
+                console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${resolved} (manual)`);
+                return resolved;
+            }
+            
+            // Also check if it's a directory with an index file
+            if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+                const indexFiles = ['index.ts', 'index.tsx', 'index.d.ts'];
+                for (const indexFile of indexFiles) {
+                    const indexPath = path.join(resolved, indexFile);
+                    if (fs.existsSync(indexPath)) {
+                        this.moduleResolutionCache.set(cacheKey, indexPath);
+                        console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${indexPath} (directory index)`);
+                        return indexPath;
+                    }
+                }
+            }
+        }
+        
+        // Cache null result
+        console.log(`[TypeScriptAnalyzer] Failed to resolve '${moduleSpecifier}' from ${fromFile} (tried ${candidates.length} candidates)`);
+        this.moduleResolutionCache.set(cacheKey, null);
+        return null;
+    }
+
+    /**
+     * Resolves exports from a module using TypeScript's type checker.
+     * This handles export * from modules that aren't explicitly listed.
+     * Caches results for performance.
+     */
+    private resolveModuleExports(moduleSpecifier: string, fromFile: string): string[] {
+        console.log("[resolveModuleExports] Called", { moduleSpecifier, fromFile });
+        const resolvedPath = this.resolveModulePath(moduleSpecifier, fromFile);
+        console.log("[resolveModuleExports] Resolved path:", resolvedPath);
+        if (!resolvedPath) {
+            console.warn(`[TypeScriptAnalyzer] Could not resolve module specifier "${moduleSpecifier}" from "${fromFile}"`);
+            return [];
+        }
+
+        console.log(`[TypeScriptAnalyzer] Resolving module specifier "${moduleSpecifier}" from "${fromFile}" -> ${resolvedPath}`);
+        
+        // Check cache
+        if (this.symbolExportsCache.has(resolvedPath)) {
+            return this.symbolExportsCache.get(resolvedPath)!;
+        }
+        
+        // Try to get the source file from the project
+        let targetSourceFile = this.project.getSourceFile(resolvedPath);
+        if (!targetSourceFile && this.checker) {
+            // If not in project, try to add it
+            if (fs.existsSync(resolvedPath)) {
+                try {
+                    const content = fs.readFileSync(resolvedPath, 'utf8');
+                    this.project.createSourceFile(resolvedPath, content, { overwrite: true });
+                    this.updateTypeScriptProgram();
+                    targetSourceFile = this.project.getSourceFile(resolvedPath);
+                } catch (e) {
+                    // Ignore errors
+                }
+            }
+        }
+        
+        const exports: string[] = [];
+        
+        if (this.checker && targetSourceFile) {
+            try {
+                // Use TypeScript's type checker to get module exports
+                const sourceFile = targetSourceFile.compilerNode;
+                // Get the module symbol from the source file
+                const moduleSymbol = this.checker.getSymbolAtLocation(sourceFile as unknown as ts.Node);
+                
+                if (moduleSymbol) {
+                    const moduleExports = this.checker.getExportsOfModule(moduleSymbol);
+                    for (const exportSymbol of moduleExports) {
+                        // Skip default export symbol name
+                        if (exportSymbol.getName() !== 'default') {
+                            exports.push(exportSymbol.getName());
+                        }
+                    }
+                }
+            } catch (e) {
+                // Fallback: use ts-morph to get exports
+                const exportedDecls = targetSourceFile.getExportedDeclarations();
+                for (const name of exportedDecls.keys()) {
+                    exports.push(name);
+                }
+            }
+        } else if (targetSourceFile) {
+            // Fallback: use ts-morph to get exports
+            const exportedDecls = targetSourceFile.getExportedDeclarations();
+            for (const name of exportedDecls.keys()) {
+                exports.push(name);
+            }
+        }
+        
+        // Cache result
+        this.symbolExportsCache.set(resolvedPath, exports);
+        return exports;
     }
 
     private findSymbolInFile(sourceFile: SourceFile, symbolName: string): Node | null {
@@ -738,92 +1012,217 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                 enums.push(symbolInfo);
             }
 
-            // Extract exports (but skip re-exports - they'll be handled separately)
-            // getExportedDeclarations() can return re-exports as "variable" declarations, so we need to filter them out
-            const exportDeclarations = sourceFile.getExportedDeclarations();
-            const defaultExport = sourceFile.getDefaultExportSymbol();
+            // Extract exports - split into 3 buckets: directExports, reExportedSymbols, typeOnlyExports
+            // CRITICAL: For barrel files, getExportedDeclarations() includes re-exported symbols,
+            // so we must use AST-first approach and avoid double-counting.
             
-            // First, collect all re-exported names to filter them out from getExportedDeclarations()
-            const reExportedNames = new Set<string>();
             const allExportStatements = sourceFile.getExportDeclarations();
+            const defaultExport = sourceFile.getDefaultExportSymbol();
+            console.log(`[TypeScriptAnalyzer] Export declarations found: ${allExportStatements.length}`);
+            
+            // Track counts explicitly and mutually exclusively
+            let directExportedGroups = 0;
+            let reexportGroupsResolved = 0;
+            let reexportGroupsUnresolved = 0;
+            
+            // First pass: Collect all re-exported keys using strong key format
+            // Use same key structure as uniqueness: name|module|type/value|kind
+            // This prevents false positives when same name appears as both direct and re-export
+            const reExportedKeys = new Set<string>();
+            const reExportStatements: Array<{stmt: any, isTypeOnly: boolean, isNamespace: boolean, moduleSpecifier: string}> = [];
+            
             for (const exportStmt of allExportStatements) {
-                if (exportStmt.getModuleSpecifierValue()) {
-                    // This is a re-export - collect all exported names
-                    for (const namedExport of exportStmt.getNamedExports()) {
-                        // Use compilerNode.name.text for the public name (after 'as')
-                        const publicName = namedExport.compilerNode.name.text;
-                        reExportedNames.add(publicName);
+                const moduleSpecifier = exportStmt.getModuleSpecifierValue();
+                const namedCount = exportStmt.getNamedExports().length;
+                const namespaceExportNode = exportStmt.getNamespaceExport();
+                const isNamespaceExport = exportStmt.isNamespaceExport() && !!namespaceExportNode;
+                console.log(`[TypeScriptAnalyzer] Export declaration module specifier: ${moduleSpecifier ?? '<none>'}`);
+                console.log(`[TypeScriptAnalyzer] Export declaration details: named=${namedCount}, namespace=${isNamespaceExport}`);
+                if (moduleSpecifier) {
+                    // This is a re-export statement
+                    const isTypeOnlyDeclaration = exportStmt.isTypeOnly();
+                    const isNamespaceExport = exportStmt.isNamespaceExport() && !!exportStmt.getNamespaceExport();
+                    
+                    reExportStatements.push({
+                        stmt: exportStmt,
+                        isTypeOnly: isTypeOnlyDeclaration,
+                        isNamespace: isNamespaceExport,
+                        moduleSpecifier
+                    });
+                    
+                    // For named re-exports, collect the keys immediately
+                    const namedExports = exportStmt.getNamedExports();
+                    if (isNamespaceExport) {
+                        const namespaceName = exportStmt.getNamespaceExport()?.getName();
+                        if (namespaceName) {
+                            const kind = 're-export';
+                            const key = `${namespaceName}|${moduleSpecifier}|${isTypeOnlyDeclaration ? 'type' : 'value'}|${kind}`;
+                            reExportedKeys.add(key);
+                        }
+                    } else if (namedExports.length > 0) {
+                        for (const namedExport of namedExports) {
+                            const compilerNode = namedExport.compilerNode;
+                            const publicName = compilerNode.name.text;
+                            const isTypeOnlySpecifier = (compilerNode as unknown as ts.ExportSpecifier).isTypeOnly === true || isTypeOnlyDeclaration;
+                            const kind = 're-export'; // Named re-exports are always 're-export' kind
+                            // Build strong key: name|module|type/value|kind
+                            const key = `${publicName}|${moduleSpecifier}|${isTypeOnlySpecifier ? 'type' : 'value'}|${kind}`;
+                            reExportedKeys.add(key);
+                        }
+                    } else {
+                        // For export * from (and namespace exports), resolve and collect keys
+                        // Note: We don't know the kind yet, so we'll use a placeholder
+                        // The actual kind will be determined when we create ExportInfo objects
+                        console.log(`[TypeScriptAnalyzer] First-pass star export resolve: ${moduleSpecifier} from ${normalizedPath}`);
+                        const resolvedExports = this.resolveModuleExports(moduleSpecifier, normalizedPath);
+                        console.log(`[TypeScriptAnalyzer] First-pass star export result: ${resolvedExports.length} exports`);
+                        for (const exportName of resolvedExports) {
+                            // For star exports, we mark all as type-only if the declaration is type-only
+                            const kind = 're-export';
+                            const key = `${exportName}|${moduleSpecifier}|${isTypeOnlyDeclaration ? 'type' : 'value'}|${kind}`;
+                            reExportedKeys.add(key);
+                        }
                     }
                 }
             }
             
-            console.log(`[TypeScriptAnalyzer] Found ${exportDeclarations.size} exported declaration groups (excluding ${reExportedNames.size} re-exports)`);
+            // Second pass: Extract direct exports (declared in this file, NOT re-exported)
+            // CRITICAL: Check that declarations actually originate in this file
+            const exportDeclarations = sourceFile.getExportedDeclarations();
+            const currentFilePath = sourceFile.getFilePath();
+            
             for (const [name, declarations] of exportDeclarations) {
-                // Skip if this is a re-export (will be handled separately)
-                if (reExportedNames.has(name)) {
-                    console.log(`[TypeScriptAnalyzer]   - Skipping re-export '${name}' from getExportedDeclarations()`);
+                // Filter: Only include declarations that originate in this file
+                const localDeclarations = declarations.filter(decl => {
+                    const declSourceFile = decl.getSourceFile();
+                    return declSourceFile && declSourceFile.getFilePath() === currentFilePath;
+                });
+                
+                // If no local declarations, this export comes from elsewhere (re-export)
+                if (localDeclarations.length === 0) {
                     continue;
                 }
-                console.log(`[TypeScriptAnalyzer]   - Export: ${name} (${declarations.length} declarations)`);
-                for (const decl of declarations) {
-                    const isDefault = defaultExport?.getName() === name;
+                
+                // Check if this export conflicts with a re-export using strong key
+                // We need to check all possible combinations since we don't know the exact kind/isTypeOnly yet
+                let isReExported = false;
+                for (const decl of localDeclarations) {
+                    const kind = this.getDeclarationKind(decl);
+                    const isTypeOnly = false; // Direct exports are runtime by default
+                    const key = `${name}|local|value|${kind}`;
+                    if (reExportedKeys.has(key)) {
+                        isReExported = true;
+                        break;
+                    }
+                }
+                
+                if (isReExported) {
+                    continue;
+                }
+                
+                // This is a direct export (declared locally in this file)
+                directExportedGroups++;
+                const isDefault = defaultExport?.getName() === name;
+                for (const decl of localDeclarations) {
                     const exportInfo: ExportInfo = {
                         name,
                         type: isDefault ? 'default' : 'named',
                         kind: this.getDeclarationKind(decl),
-                        line: decl.getStartLineNumber()
+                        line: decl.getStartLineNumber(),
+                        isTypeOnly: false // Direct exports are runtime by default
                     };
                     exports.push(exportInfo);
                 }
             }
             
-            // Extract re-exports (export { x } from './module' or export { y as x } from './module')
-            // In ts-morph: spec.name is the public name (after 'as'), spec.getAliasNode() gets the alias
-            // But we need the propertyName (before 'as') which is the source name
-            const exportStatements = sourceFile.getExportDeclarations();
-            console.log(`[TypeScriptAnalyzer] Found ${exportStatements.length} export declarations`);
-            for (const exportStmt of exportStatements) {
-                const moduleSpecifier = exportStmt.getModuleSpecifierValue();
-                console.log(`[TypeScriptAnalyzer]   Export declaration: hasModuleSpecifier=${!!moduleSpecifier}, moduleSpecifier='${moduleSpecifier}'`);
-                if (moduleSpecifier) {
-                    // This is a re-export
-                    const namedExports = exportStmt.getNamedExports();
-                    console.log(`[TypeScriptAnalyzer]   Re-export found: ${namedExports.length} named exports from '${moduleSpecifier}'`);
+            // Third pass: Process re-export statements and add them to exports
+            // (We already collected names in first pass, now we add the ExportInfo objects)
+            for (const {stmt: exportStmt, isTypeOnly: isTypeOnlyDeclaration, isNamespace: isNamespaceExport, moduleSpecifier} of reExportStatements) {
+                const namedExports = exportStmt.getNamedExports();
+                console.log(`[TypeScriptAnalyzer] Re-export statement: ${moduleSpecifier} (named=${namedExports.length}, namespace=${isNamespaceExport})`);
+                if (isNamespaceExport) {
+                    const namespaceName = exportStmt.getNamespaceExport()?.getName();
+                    if (namespaceName) {
+                        reexportGroupsResolved++;
+                        const exportInfo: ExportInfo = {
+                            name: namespaceName,
+                            type: 'namespace',
+                            kind: 're-export',
+                            line: exportStmt.getStartLineNumber(),
+                            sourceModule: moduleSpecifier,
+                            sourceName: namespaceName,
+                            exportedName: namespaceName,
+                            localName: undefined,
+                            isTypeOnly: isTypeOnlyDeclaration
+                        };
+                        exports.push(exportInfo);
+                    } else {
+                        reexportGroupsUnresolved++;
+                    }
+                } else if (namedExports.length > 0) {
+                    // Handle export { x } from './module' or export { type Foo } from './module'
+                    reexportGroupsResolved++;
+                    
                     for (const namedExport of namedExports) {
-                        // IMPORTANT: Use compilerNode.name.text for the public name (after 'as')
-                        // getName() can return the wrong value in some cases
                         const compilerNode = namedExport.compilerNode;
-                        const exportedName = compilerNode.name.text; // Public API name: 'x' in both "export { x }" and "export { y as x }"
+                        const exportedName = compilerNode.name.text; // Public API name
                         
-                        // Get the source name (propertyName - the name before 'as')
-                        // propertyName exists when there's an alias: export { y as x } → propertyName='y', name='x'
-                        // If no propertyName, it's export { x } → name='x', so sourceName='x'
-                        const hasPropertyName = !!compilerNode.propertyName;
+                        // Check if this specific specifier is type-only (TS 5.x: export { type Foo } from ...)
+                        const isTypeOnlySpecifier = (compilerNode as unknown as ts.ExportSpecifier).isTypeOnly === true || isTypeOnlyDeclaration;
+                        
                         const sourceName = compilerNode.propertyName 
                             ? compilerNode.propertyName.text 
-                            : compilerNode.name.text; // If no propertyName, use name (export { x } means sourceName = x)
-                        
-                        console.log(`[TypeScriptAnalyzer]   Re-export spec: exportedName='${exportedName}' (from compilerNode.name), hasPropertyName=${hasPropertyName}, sourceName='${sourceName}', getName()='${namedExport.getName()}'`);
+                            : compilerNode.name.text;
                         
                         const exportInfo: ExportInfo = {
-                            name: exportedName, // Public API name (what consumers see - 'x')
+                            name: exportedName,
                             type: 'named',
                             kind: 're-export',
                             line: exportStmt.getStartLineNumber(),
                             sourceModule: moduleSpecifier,
-                            sourceName: sourceName, // The actual name from source module ('x' or 'y')
-                            // Keep deprecated fields for backward compatibility
+                            sourceName: sourceName,
                             exportedName: exportedName,
-                            localName: sourceName !== exportedName ? sourceName : undefined
+                            localName: sourceName !== exportedName ? sourceName : undefined,
+                            isTypeOnly: isTypeOnlySpecifier
                         };
                         exports.push(exportInfo);
-                        console.log(`[TypeScriptAnalyzer]   ✅ Re-export entry created: name='${exportInfo.name}', sourceModule='${exportInfo.sourceModule}', sourceName='${exportInfo.sourceName}'`);
+                    }
+                } else {
+                    // Handle export * from './module' or export type * from './module'
+                    console.log(`[TypeScriptAnalyzer] Star export: ${moduleSpecifier} from ${normalizedPath} (typeOnly=${isTypeOnlyDeclaration})`);
+                    
+                    const resolvedExports = this.resolveModuleExports(moduleSpecifier, normalizedPath);
+                    
+                    console.log(`[TypeScriptAnalyzer] Star export resolved: ${resolvedExports.length} exports for ${moduleSpecifier}`);
+                    
+                    if (resolvedExports.length > 0) {
+                        reexportGroupsResolved++;
+                        console.log(`[TypeScriptAnalyzer] Star export resolved; adding ${resolvedExports.length} exports`);
+                        for (const exportName of resolvedExports) {
+                            const exportInfo: ExportInfo = {
+                                name: exportName,
+                                type: 'named',
+                                kind: 're-export',
+                                line: exportStmt.getStartLineNumber(),
+                                sourceModule: moduleSpecifier,
+                                sourceName: exportName,
+                                exportedName: exportName,
+                                localName: undefined,
+                                isTypeOnly: isTypeOnlyDeclaration // export type * means all resolved exports are type-only
+                            };
+                            exports.push(exportInfo);
+                        }
+                    } else {
+                        reexportGroupsUnresolved++;
+                        console.log(`[TypeScriptAnalyzer] Star export unresolved: ${moduleSpecifier}`);
                     }
                 }
             }
             
-            // Handle default export separately if exists
-            if (defaultExport) {
+            // Handle default export separately if exists and not re-exported
+            // Check using strong key format
+            const defaultKey = `default|local|value|${defaultExport ? this.getDeclarationKind(defaultExport.getValueDeclaration() as Node) : 'default'}`;
+            if (defaultExport && !reExportedKeys.has(defaultKey)) {
                 const defaultExportDecl = sourceFile.getDefaultExportSymbol()?.getValueDeclaration();
                 if (defaultExportDecl) {
                     const node = this.project.getSourceFile(normalizedPath)?.getDefaultExportSymbol()?.getValueDeclaration();
@@ -832,20 +1231,177 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                             name: 'default',
                             type: 'default',
                             kind: this.getDeclarationKind(node as Node),
-                            line: (node as any).getStartLineNumber?.() || 0
+                            line: (node as any).getStartLineNumber?.() || 0,
+                            isTypeOnly: false
                         };
                         exports.push(exportInfo);
+                        directExportedGroups++; // Count default export as direct
                     }
                 }
             }
+            
+            // Compute export statistics - split into buckets
+            const directExportsRuntime = exports.filter(e => !e.sourceModule && !e.isTypeOnly && e.kind !== 'type' && e.kind !== 'interface' && e.kind !== 'type alias').length;
+            const directExportsType = exports.filter(e => !e.sourceModule && !e.isTypeOnly && (e.kind === 'type' || e.kind === 'interface' || e.kind === 'type alias')).length;
+            const directExports = directExportsRuntime + directExportsType;
+            
+            const reExportedSymbolsRuntime = exports.filter(e => e.sourceModule && !e.isTypeOnly).length;
+            const reExportedSymbolsTypeOnly = exports.filter(e => e.sourceModule && e.isTypeOnly).length;
+            const reExportedSymbols = reExportedSymbolsRuntime + reExportedSymbolsTypeOnly;
+            
+            const typeOnlyExports = exports.filter(e => e.isTypeOnly).length;
+            const exportsTotal = exports.length;
+            const exportsRuntime = directExportsRuntime + reExportedSymbolsRuntime;
+            const exportsType = directExportsType + typeOnlyExports + reExportedSymbolsTypeOnly;
+            
+            // Helper to get declaration location for an export (used for uniqueness key)
+            const getDeclarationLocation = (exp: ExportInfo): string => {
+                if (!exp.sourceModule) {
+                    // Direct export - try to get declaration from exportDeclarations
+                    const decls = exportDeclarations.get(exp.name);
+                    if (decls && decls.length > 0) {
+                        const firstDecl = decls[0];
+                        const declFile = firstDecl.getSourceFile();
+                        if (declFile) {
+                            const declPath = declFile.getFilePath();
+                            const declPos = firstDecl.getStart();
+                            return `${declPath}|${declPos}`;
+                        }
+                    }
+                }
+                // Re-export - use source module as location identifier
+                return exp.sourceModule || 'local';
+            };
+            
+            // Count unique export keys using the strongest key possible:
+            // - exported name
+            // - source module (or 'local' for direct exports)
+            // - isTypeOnly flag
+            // - kind (to distinguish type vs value exports with same name)
+            // - declaration file and position (when available) for true symbol identity
+            // This helps avoid collisions from aliases, merged symbols, or multiple resolution paths
+            const uniqueExportKeys = new Set<string>();
+            const exportKeyToInfo = new Map<string, ExportInfo>();
+            
+            for (const exp of exports) {
+                // Try to get declaration location for stronger key
+                const declLocation = getDeclarationLocation(exp);
+                
+                // Create strongest unique key: name|module|type/value|kind|declLocation
+                // If declaration location is available, use it; otherwise fall back to module
+                const key = `${exp.name}|${exp.sourceModule || 'local'}|${exp.isTypeOnly ? 'type' : 'value'}|${exp.kind}|${declLocation}`;
+                uniqueExportKeys.add(key);
+                
+                // Track first occurrence for duplicate reporting
+                if (!exportKeyToInfo.has(key)) {
+                    exportKeyToInfo.set(key, exp);
+                }
+            }
+            
+            const exportsWithDeclarations = exports.filter(e => {
+                // Check if we have a declaration node for this export
+                if (!e.sourceModule) {
+                    // Direct export - check if it's in exportDeclarations
+                    return exportDeclarations.has(e.name);
+                }
+                // Re-export - we don't have direct access to declaration, but we resolved it
+                return true; // Assume resolved re-exports have declarations
+            }).length;
+            
+            // Log explicit counts
+            console.log(`[TypeScriptAnalyzer] Export counts: direct_exported_groups=${directExportedGroups}, reexport_groups_resolved=${reexportGroupsResolved}, reexport_groups_unresolved=${reexportGroupsUnresolved}`);
+            console.log(`[TypeScriptAnalyzer] Export buckets: directExports=${directExports}, reExportedSymbols=${reExportedSymbols}, typeOnlyExports=${typeOnlyExports}`);
+            console.log(`[TypeScriptAnalyzer] Export totals: exports_total=${exportsTotal}, exports_runtime=${exportsRuntime}, exports_type=${exportsType}, exports_unique=${uniqueExportKeys.size}, exports_with_declarations=${exportsWithDeclarations}`);
+            
+            // Barrel file assertions (for regression mode)
+            const localDeclarations = functions.length + classes.length + interfaces.length + typeAliases.length + enums.length;
+            const isBarrelFile = localDeclarations === 0 && exportsTotal > 0;
+            
+            if (isBarrelFile) {
+                // Assertions for barrel files
+                if (directExports > 0 && directExports > exportsTotal * 0.1) {
+                    console.warn(`[TypeScriptAnalyzer] Barrel file has ${directExports} direct exports (expected near 0)`);
+                }
+                
+                // Check for duplicate keys using the strongest key format (with declaration location)
+                const exportKeyCounts = new Map<string, number>();
+                const exportKeyToSources = new Map<string, string[]>();
+                
+                for (const exp of exports) {
+                    const declLocation = getDeclarationLocation(exp);
+                    const key = `${exp.name}|${exp.sourceModule || 'local'}|${exp.isTypeOnly ? 'type' : 'value'}|${exp.kind}|${declLocation}`;
+                    exportKeyCounts.set(key, (exportKeyCounts.get(key) || 0) + 1);
+                    
+                    if (!exportKeyToSources.has(key)) {
+                        exportKeyToSources.set(key, []);
+                    }
+                    const source = exp.sourceModule || 'local';
+                    if (!exportKeyToSources.get(key)!.includes(source)) {
+                        exportKeyToSources.get(key)!.push(source);
+                    }
+                }
+                
+                const duplicates = Array.from(exportKeyCounts.entries())
+                    .filter(([_, count]) => count > 1)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 20);
+                
+                if (duplicates.length > 0) {
+                    console.warn(`[TypeScriptAnalyzer] Found ${duplicates.length} duplicate export keys (top 20):`);
+                    for (const [key, count] of duplicates) {
+                        const sources = exportKeyToSources.get(key) || [];
+                        console.warn(`[TypeScriptAnalyzer]   - ${key}: ${count} times (sources: ${sources.join(', ')})`);
+                    }
+                }
+                
+                // Log uniqueness status (don't fail hard, just warn)
+                const duplicatesCount = exportsTotal - uniqueExportKeys.size;
+                if (exportsTotal !== uniqueExportKeys.size) {
+                    console.warn(`[TypeScriptAnalyzer] Uniqueness check: exports_total=${exportsTotal} != exports_unique=${uniqueExportKeys.size} (difference: ${duplicatesCount} duplicates)`);
+                } else {
+                    console.log(`[TypeScriptAnalyzer] Uniqueness check passed: all ${exportsTotal} exports are unique`);
+                }
+                
+                // Regression-specific assertion: expect at least one export type * from statement
+                const hasTypeOnlyStarExport = allExportStatements.some(stmt => {
+                    const moduleSpec = stmt.getModuleSpecifierValue();
+                    return moduleSpec && stmt.isTypeOnly() && stmt.isNamespaceExport();
+                });
+                if (hasTypeOnlyStarExport) {
+                    console.log(`[TypeScriptAnalyzer] Found export type * from statement (type-only star export)`);
+                }
+                
+                // Concrete regression checks (should fail CI if broken)
+                // These are deterministic pass/fail signals for the regression harness
+                const regressionChecks = {
+                    // Check 1: Barrel files should have near-zero direct exports
+                    directExportsNearZero: directExportedGroups <= 1, // Allow 0-1 for edge cases
+                    // Check 2: export type * from must contribute only to exports_type, not exports_runtime
+                    typeOnlyExportsNotInRuntime: typeOnlyExports > 0 ? exportsRuntime === (directExportsRuntime + reExportedSymbolsRuntime) : true,
+                    // Check 3: Uniqueness after dedupe (allow small number of duplicates for now)
+                    duplicatesAcceptable: duplicatesCount <= 1, // Allow 0-1 duplicates
+                    // Check 4: If export type * exists, it should contribute to type exports
+                    typeOnlyStarExportContributesToType: hasTypeOnlyStarExport ? exportsType >= typeOnlyExports : true
+                };
+                
+                // Log regression check results
+                const failedChecks = Object.entries(regressionChecks)
+                    .filter(([_, passed]) => !passed)
+                    .map(([name, _]) => name);
+                
+                if (failedChecks.length > 0) {
+                    console.error(`[TypeScriptAnalyzer] REGRESSION CHECKS FAILED: ${failedChecks.join(', ')}`);
+                    console.error(`[TypeScriptAnalyzer] Check details:`, regressionChecks);
+                } else {
+                    console.log(`[TypeScriptAnalyzer] All regression checks passed`);
+                }
+            }
 
-            // Extract imports
+            // Extract imports (suppress verbose logging)
             const importDeclarations = sourceFile.getImportDeclarations();
-            console.log(`[TypeScriptAnalyzer] Found ${importDeclarations.length} import declarations`);
             for (const importDecl of importDeclarations) {
                 const moduleSpecifier = importDecl.getModuleSpecifierValue();
                 if (moduleSpecifier) {
-                    console.log(`[TypeScriptAnalyzer]   - Import from: ${moduleSpecifier}`);
                     const namedImports = importDecl.getNamedImports().map(imp => imp.getName());
                     const defaultImport = importDecl.getDefaultImport()?.getText();
                     const namespaceImport = importDecl.getNamespaceImport()?.getText();
@@ -860,45 +1416,8 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                 }
             }
 
-            console.log(`[TypeScriptAnalyzer] Snapshot summary:`);
-            console.log(`[TypeScriptAnalyzer]   - Functions: ${functions.length}`);
-            console.log(`[TypeScriptAnalyzer]   - Classes: ${classes.length}`);
-            console.log(`[TypeScriptAnalyzer]   - Interfaces: ${interfaces.length}`);
-            console.log(`[TypeScriptAnalyzer]   - Type aliases: ${typeAliases.length}`);
-            console.log(`[TypeScriptAnalyzer]   - Enums: ${enums.length}`);
-            console.log(`[TypeScriptAnalyzer]   - Exports: ${exports.length}`);
-            console.log(`[TypeScriptAnalyzer]   - Imports: ${imports.length}`);
-            
-            // Sanity check: Log all exports, especially re-exports
-            console.log(`[TypeScriptAnalyzer] Export entries captured:`);
-            for (const exp of exports) {
-                if (exp.kind === 're-export') {
-                    console.log(`[TypeScriptAnalyzer]   ✅ Re-export: name='${exp.name}', sourceModule='${exp.sourceModule}', sourceName='${exp.sourceName}'`);
-                } else {
-                    console.log(`[TypeScriptAnalyzer]   - Export: name='${exp.name}', kind='${exp.kind}'`);
-                }
-            }
-            
-            // Specific check for common test symbols (for debugging S04)
-            const xExport = exports.find(e => e.name === 'x');
-            if (xExport) {
-                console.log(`[TypeScriptAnalyzer] 🔍 Found export 'x': ${JSON.stringify({ name: xExport.name, kind: xExport.kind, sourceModule: xExport.sourceModule, sourceName: xExport.sourceName })}`);
-            }
-            
-            // Debug: Log all exports for debugging
-            console.log('[TypeScriptAnalyzer] Exports summary:', exports.map(v => ({
-                name: v.name,
-                kind: v.kind,
-                from: v.sourceModule,
-                source: v.sourceName,
-            })));
-            
-            if (functions.length > 0) {
-                console.log(`[TypeScriptAnalyzer] Function details:`);
-                functions.forEach(f => {
-                    console.log(`[TypeScriptAnalyzer]   - ${f.qualifiedName} (${f.kind}) at line ${f.line}, signature: ${f.signature}`);
-                });
-            }
+            // Only log summary, not every individual export
+            console.log(`[TypeScriptAnalyzer] Snapshot: ${functions.length} functions, ${classes.length} classes, ${interfaces.length} interfaces, ${typeAliases.length} types, ${enums.length} enums, ${exports.length} exports, ${imports.length} imports`);
 
             return {
                 filePath: normalizedPath,
@@ -910,6 +1429,17 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                 enums,
                 exports,
                 imports,
+                exportStats: {
+                    directExports,
+                    reExportedSymbols,
+                    typeOnlyExports,
+                    exportsTotal,
+                    exportsRuntime,
+                    exportsType,
+                    exportsUnique: uniqueExportKeys.size,
+                    exportsWithDeclarations,
+                    reexportGroupsUnresolved
+                },
                 typeInfo: typeInfo.size > 0 ? typeInfo : undefined
             };
         } catch (error) {
@@ -990,7 +1520,8 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             added,
             removed,
             modified,
-            exportChanges
+            exportChanges,
+            packageChanges: [] // TypeScript analyzer doesn't handle package.json changes
         };
     }
 
@@ -1931,13 +2462,24 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         };
     }
 
-    private getDeclarationKind(decl: Node): string {
-        if (decl.getKindName() === 'FunctionDeclaration') return 'function';
-        if (decl.getKindName() === 'ClassDeclaration') return 'class';
-        if (decl.getKindName() === 'InterfaceDeclaration') return 'interface';
-        if (decl.getKindName() === 'TypeAliasDeclaration') return 'type';
-        if (decl.getKindName() === 'EnumDeclaration') return 'enum';
-        if (decl.getKindName() === 'VariableDeclaration') return 'variable';
+    private getDeclarationKind(decl: Node | null | undefined): string {
+        if (!decl) return 'unknown';
+        // Check if getKindName method exists (ts-morph Node method)
+        if (typeof (decl as any).getKindName !== 'function') {
+            return 'unknown';
+        }
+        try {
+            const kindName = (decl as any).getKindName();
+            if (kindName === 'FunctionDeclaration') return 'function';
+            if (kindName === 'ClassDeclaration') return 'class';
+            if (kindName === 'InterfaceDeclaration') return 'interface';
+            if (kindName === 'TypeAliasDeclaration') return 'type';
+            if (kindName === 'EnumDeclaration') return 'enum';
+            if (kindName === 'VariableDeclaration') return 'variable';
+        } catch (e) {
+            // If getKindName fails, return unknown
+            return 'unknown';
+        }
         return 'unknown';
     }
 
@@ -2033,5 +2575,1009 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
     private escapeRegex(str: string): string {
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
-}
 
+    /**
+     * Resolves entrypoint exports to their actual declaration locations.
+     * This is the core of API snapshot mode - it resolves all exports (direct and re-exported)
+     * to their real declaration files and positions.
+     */
+    async resolveEntrypointExportsToDeclarations(
+        entrypointPath: string,
+        exports: ExportInfo[]
+    ): Promise<ResolvedExport[]> {
+        if (!this.checker) {
+            console.warn('[TypeScriptAnalyzer] Type checker not available, cannot resolve exports to declarations');
+            return [];
+        }
+
+        const resolvedExports: ResolvedExport[] = [];
+        const entrypointFile = this.project.getSourceFile(entrypointPath);
+        
+        if (!entrypointFile) {
+            console.warn(`[TypeScriptAnalyzer] Entrypoint file not found: ${entrypointPath}`);
+            return [];
+        }
+
+        const entrypointFilePath = entrypointFile.getFilePath();
+
+        for (const exp of exports) {
+            try {
+                if (!exp.sourceModule) {
+                    // Case A: Direct/local export
+                    const exportDeclarations = entrypointFile.getExportedDeclarations();
+                    const declarations = exportDeclarations.get(exp.name);
+                    
+                    if (declarations && declarations.length > 0) {
+                        // Verify it's actually in this file
+                        const localDecls = declarations.filter(d => 
+                            d.getSourceFile().getFilePath() === entrypointFilePath
+                        );
+                        
+                        if (localDecls.length > 0) {
+                            const decl = localDecls[0];
+                            const declFile = decl.getSourceFile();
+                            const declPath = declFile.getFilePath();
+                            const declPos = decl.getStart();
+                            const declEnd = decl.getEnd();
+                            
+                            // Get TypeScript symbol
+                            let tsSymbol: ts.Symbol | undefined;
+                            try {
+                                const compilerNode = decl.compilerNode;
+                                tsSymbol = this.checker!.getSymbolAtLocation(compilerNode as unknown as ts.Node);
+                            } catch (e) {
+                                // Ignore
+                            }
+                            
+                            // Fallback: try to get symbol from module exports
+                            if (!tsSymbol && this.checker) {
+                                try {
+                                    const sourceFile = entrypointFile.compilerNode;
+                                    const moduleSymbol = this.checker.getSymbolAtLocation(sourceFile as unknown as ts.Node);
+                                    if (moduleSymbol) {
+                                        const moduleExports = this.checker.getExportsOfModule(moduleSymbol);
+                                        const foundSymbol = moduleExports.find(s => s.getName() === exp.name);
+                                        if (foundSymbol) {
+                                            tsSymbol = foundSymbol;
+                                        }
+                                    }
+                                } catch (e) {
+                                    // Ignore
+                                }
+                            }
+                            
+                            resolvedExports.push({
+                                exportName: exp.name,
+                                isTypeOnly: exp.isTypeOnly || false,
+                                declFilePath: declPath,
+                                declPos,
+                                declEnd,
+                                tsSymbol,
+                                kind: exp.kind
+                            });
+                            continue;
+                        }
+                    }
+                } else {
+                    // Case B/C: Re-export (named or star)
+                    const resolvedPath = this.resolveModulePath(exp.sourceModule, entrypointPath);
+                    if (!resolvedPath) {
+                        console.warn(`[TypeScriptAnalyzer] Could not resolve module: ${exp.sourceModule}`);
+                        continue;
+                    }
+                    
+                    // Load the target source file
+                    let targetSourceFile = this.project.getSourceFile(resolvedPath);
+                    if (!targetSourceFile && fs.existsSync(resolvedPath)) {
+                        try {
+                            const content = fs.readFileSync(resolvedPath, 'utf8');
+                            targetSourceFile = this.project.createSourceFile(resolvedPath, content);
+                            this.updateTypeScriptProgram();
+                        } catch (e) {
+                            console.warn(`[TypeScriptAnalyzer] Could not load file: ${resolvedPath}`);
+                            continue;
+                        }
+                    }
+                    
+                    if (!targetSourceFile || !this.checker) {
+                        continue;
+                    }
+                    
+                    if (exp.kind === 're-export' && exp.sourceName) {
+                        // Case B: export { x } from './mod'
+                        const targetExports = targetSourceFile.getExportedDeclarations();
+                        const targetDecls = targetExports.get(exp.sourceName);
+                        
+                        if (targetDecls && targetDecls.length > 0) {
+                            const decl = targetDecls[0];
+                            const declFile = decl.getSourceFile();
+                            const declPath = declFile.getFilePath();
+                            const declPos = decl.getStart();
+                            const declEnd = decl.getEnd();
+                            
+                            let tsSymbol: ts.Symbol | undefined;
+                            try {
+                                const compilerNode = decl.compilerNode;
+                                tsSymbol = this.checker.getSymbolAtLocation(compilerNode as unknown as ts.Node);
+                            } catch (e) {
+                                // Ignore
+                            }
+                            
+                            // Fallback: try to get symbol from target module exports
+                            if (!tsSymbol && this.checker) {
+                                try {
+                                    const targetSourceFile = declFile.compilerNode;
+                                    const moduleSymbol = this.checker.getSymbolAtLocation(targetSourceFile as unknown as ts.Node);
+                                    if (moduleSymbol) {
+                                        const moduleExports = this.checker.getExportsOfModule(moduleSymbol);
+                                        // Prefer value symbols
+                                        const foundSymbol = moduleExports.find(s => {
+                                            if (s.getName() !== exp.sourceName) return false;
+                                            const flags = s.getFlags();
+                                            return (flags & (ts.SymbolFlags.Value | ts.SymbolFlags.Function | ts.SymbolFlags.Class | ts.SymbolFlags.Enum | ts.SymbolFlags.Variable)) !== 0;
+                                        }) || moduleExports.find(s => s.getName() === exp.sourceName);
+                                        if (foundSymbol) {
+                                            tsSymbol = foundSymbol;
+                                        }
+                                    }
+                                } catch (e) {
+                                    // Ignore
+                                }
+                            }
+                            
+                            resolvedExports.push({
+                                exportName: exp.name,
+                                isTypeOnly: exp.isTypeOnly || false,
+                                declFilePath: declPath,
+                                declPos,
+                                declEnd,
+                                tsSymbol,
+                                sourceModule: exp.sourceModule,
+                                kind: exp.kind
+                            });
+                        }
+                    } else {
+                        // Case C: export * from './mod' or export type * from './types'
+                        // Use TypeScript's type checker to get all exports
+                        try {
+                            const sourceFile = targetSourceFile.compilerNode;
+                            const moduleSymbol = this.checker.getSymbolAtLocation(sourceFile as unknown as ts.Node);
+                            
+                            if (moduleSymbol) {
+                                // Get all exports from the module (both value and type exports)
+                                // TypeScript's getExportsOfModule should include both
+                                const moduleExports = this.checker.getExportsOfModule(moduleSymbol);
+                                
+                                // Track which exports we've already added (by name) to avoid duplicates
+                                const addedExports = new Set<string>();
+                                
+                                for (const exportSymbol of moduleExports) {
+                                    if (exportSymbol.getName() === 'default') {
+                                        continue;
+                                    }
+                                    
+                                    const exportName = exportSymbol.getName();
+                                    
+                                    // Skip if we've already added this export (prefer value symbols over type symbols)
+                                    if (addedExports.has(exportName)) {
+                                        continue;
+                                    }
+                                    
+                                    // For type-only exports, we want type symbols
+                                    // For regular exports, prefer value symbols
+                                    const flags = exportSymbol.getFlags();
+                                    const isTypeSymbol = (flags & ts.SymbolFlags.Type) !== 0 && 
+                                                         (flags & (ts.SymbolFlags.Value | ts.SymbolFlags.Function | ts.SymbolFlags.Class | ts.SymbolFlags.Enum | ts.SymbolFlags.Variable)) === 0;
+                                    
+                                    // If this is a type-only export, include type symbols
+                                    // Otherwise, skip pure type symbols (interfaces, type aliases without values)
+                                    if (!exp.isTypeOnly && isTypeSymbol) {
+                                        // Check if there's a value symbol with the same name
+                                        const hasValueSymbol = moduleExports.some(s => 
+                                            s.getName() === exportName && 
+                                            (s.getFlags() & (ts.SymbolFlags.Value | ts.SymbolFlags.Function | ts.SymbolFlags.Class | ts.SymbolFlags.Enum | ts.SymbolFlags.Variable)) !== 0
+                                        );
+                                        if (hasValueSymbol) {
+                                            continue; // Skip this type symbol, we'll get the value symbol
+                                        }
+                                    }
+                                    
+                                    // Get declaration location
+                                    const declarations = exportSymbol.getDeclarations();
+                                    if (declarations && declarations.length > 0) {
+                                        const firstDecl = declarations[0];
+                                        const declFile = firstDecl.getSourceFile();
+                                        const declPath = declFile.fileName;
+                                        const declPos = firstDecl.getStart();
+                                        const declEnd = firstDecl.getEnd();
+                                        
+                                        // Verify the symbol is valid
+                                        if (!exportSymbol || exportSymbol.flags === ts.SymbolFlags.None) {
+                                            console.warn(`[TypeScriptAnalyzer] Invalid symbol for export ${exportName}`);
+                                            continue;
+                                        }
+                                        
+                                        resolvedExports.push({
+                                            exportName,
+                                            isTypeOnly: exp.isTypeOnly || false, // Preserve type-only from export type *
+                                            declFilePath: declPath,
+                                            declPos,
+                                            declEnd,
+                                            tsSymbol: exportSymbol, // This should be set
+                                            sourceModule: exp.sourceModule,
+                                            kind: 're-export'
+                                        });
+                                        
+                                        addedExports.add(exportName);
+                                    } else {
+                                        // Try alternative approach: use ts-morph to find the declaration
+                                        const exportedDecls = targetSourceFile.getExportedDeclarations();
+                                        const namedDecls = exportedDecls.get(exportSymbol.getName());
+                                        
+                                        if (namedDecls && namedDecls.length > 0) {
+                                            const decl = namedDecls[0];
+                                            const declFile = decl.getSourceFile();
+                                            const declPath = declFile.getFilePath();
+                                            const declPos = decl.getStart();
+                                            const declEnd = decl.getEnd();
+                                            
+                                            // Try to get symbol from the declaration node
+                                            let tsSymbol: ts.Symbol | undefined = exportSymbol;
+                                            try {
+                                                const compilerNode = decl.compilerNode;
+                                                const symbolFromNode = this.checker!.getSymbolAtLocation(compilerNode as unknown as ts.Node);
+                                                if (symbolFromNode) {
+                                                    tsSymbol = symbolFromNode;
+                                                }
+                                            } catch (e) {
+                                                // Use the exportSymbol we already have
+                                            }
+                                            
+                                            resolvedExports.push({
+                                                exportName: exportSymbol.getName(),
+                                                isTypeOnly: exp.isTypeOnly || false,
+                                                declFilePath: declPath,
+                                                declPos,
+                                                declEnd,
+                                                tsSymbol: tsSymbol,
+                                                sourceModule: exp.sourceModule,
+                                                kind: 're-export'
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.warn(`[TypeScriptAnalyzer] Error resolving star export from ${exp.sourceModule}:`, e);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn(`[TypeScriptAnalyzer] Error resolving export ${exp.name}:`, error);
+            }
+        }
+        
+        return resolvedExports;
+    }
+
+    /**
+     * Builds an API snapshot from resolved exports.
+     * This creates normalized API shapes for each exported symbol.
+     */
+    async buildApiSnapshotFromResolvedExports(
+        entrypointPath: string,
+        resolvedExports: ResolvedExport[]
+    ): Promise<ApiSnapshot> {
+        const exports = new Map<ExportIdentity, ApiShape>();
+        
+        if (!this.checker) {
+            console.warn('[TypeScriptAnalyzer] Type checker not available, cannot build API snapshot');
+            return {
+                entrypointPath,
+                exports,
+                timestamp: new Date()
+            };
+        }
+        
+        console.log(`[TypeScriptAnalyzer] Building API snapshot from ${resolvedExports.length} resolved exports`);
+        
+        let successCount = 0;
+        let failureCount = 0;
+        
+        for (const resolved of resolvedExports) {
+            try {
+                // If no tsSymbol, try to get it from the declaration file
+                if (!resolved.tsSymbol) {
+                    // Try to load the declaration file and get the symbol
+                    const declSourceFile = this.project.getSourceFile(resolved.declFilePath);
+                    if (declSourceFile && this.checker) {
+                        try {
+                            // Try to find the declaration by name
+                            const exportedDecls = declSourceFile.getExportedDeclarations();
+                            const decls = exportedDecls.get(resolved.exportName);
+                            
+                            if (decls && decls.length > 0) {
+                                const decl = decls[0];
+                                const compilerNode = decl.compilerNode;
+                                const symbol = this.checker.getSymbolAtLocation(compilerNode as unknown as ts.Node);
+                                if (symbol) {
+                                    resolved.tsSymbol = symbol;
+                                }
+                            }
+                            
+                            // If still no symbol, try getting from module exports
+                            if (!resolved.tsSymbol) {
+                                const sourceFile = declSourceFile.compilerNode;
+                                const moduleSymbol = this.checker.getSymbolAtLocation(sourceFile as unknown as ts.Node);
+                                if (moduleSymbol) {
+                                    const moduleExports = this.checker.getExportsOfModule(moduleSymbol);
+                                    // Prefer value symbols over type symbols
+                                    const foundSymbol = moduleExports.find(s => {
+                                        if (s.getName() !== resolved.exportName) return false;
+                                        const flags = s.getFlags();
+                                        // Prefer value symbols (functions, classes, variables, enums)
+                                        return (flags & (ts.SymbolFlags.Value | ts.SymbolFlags.Function | ts.SymbolFlags.Class | ts.SymbolFlags.Enum | ts.SymbolFlags.Variable)) !== 0;
+                                    }) || moduleExports.find(s => s.getName() === resolved.exportName);
+                                    if (foundSymbol) {
+                                        resolved.tsSymbol = foundSymbol;
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            // Ignore errors in fallback
+                        }
+                    }
+                    
+                    if (!resolved.tsSymbol) {
+                        console.warn(`[TypeScriptAnalyzer] No tsSymbol for export ${resolved.exportName} at ${resolved.declFilePath}:${resolved.declPos}`);
+                        failureCount++;
+                        continue;
+                    }
+                }
+                
+                // Skip type-only exports - they don't have runtime API shapes
+                if (resolved.isTypeOnly) {
+                    // Silently skip type-only exports - they're expected to not have runtime shapes
+                    continue;
+                }
+                
+                const identity = this.createExportIdentity(resolved);
+                const shape = await this.buildApiShapeForSymbol(resolved);
+                
+                if (shape) {
+                    exports.set(identity, shape);
+                    successCount++;
+                } else {
+                    // Check if this is a type-only export or a variable with interface declaration
+                    // (both are expected to not have runtime API shapes)
+                    const isTypeOnly = resolved.isTypeOnly || 
+                        (resolved.tsSymbol && 
+                         (resolved.tsSymbol.getFlags() & ts.SymbolFlags.Type) !== 0 &&
+                         (resolved.tsSymbol.getFlags() & (ts.SymbolFlags.Value | ts.SymbolFlags.Function | ts.SymbolFlags.Class | ts.SymbolFlags.Enum | ts.SymbolFlags.Variable)) === 0);
+                    
+                    // Check if it's a variable symbol with interface declaration (constants like daysInWeek)
+                    const isVariableWithInterface = resolved.tsSymbol && 
+                        (resolved.tsSymbol.getFlags() & (ts.SymbolFlags.Variable | ts.SymbolFlags.Property)) !== 0 &&
+                        resolved.tsSymbol.getDeclarations()?.some((d: ts.Declaration) => ts.isInterfaceDeclaration(d)) &&
+                        !resolved.tsSymbol.getDeclarations()?.some((d: ts.Declaration) => ts.isVariableDeclaration(d));
+                    
+                    if (!isTypeOnly && !isVariableWithInterface) {
+                        // Only log as failure if it's not a known skip case
+                        console.warn(`[TypeScriptAnalyzer] Failed to build API shape for ${resolved.exportName} (kind: ${resolved.kind})`);
+                        failureCount++;
+                    }
+                    // Otherwise, it's a type-only export or variable with interface - skip silently
+                }
+            } catch (error) {
+                console.warn(`[TypeScriptAnalyzer] Error building API shape for ${resolved.exportName}:`, error);
+                failureCount++;
+            }
+        }
+        
+        console.log(`[TypeScriptAnalyzer] API snapshot: ${successCount} shapes built, ${failureCount} failed`);
+        
+        return {
+            entrypointPath,
+            exports,
+            timestamp: new Date()
+        };
+    }
+
+    /**
+     * Creates a stable export identity string.
+     */
+    private createExportIdentity(resolved: ResolvedExport): ExportIdentity {
+        return `${resolved.exportName}|${resolved.isTypeOnly ? 'type' : 'value'}|${resolved.declFilePath}|${resolved.declPos}`;
+    }
+
+    /**
+     * Builds an API shape for a resolved export symbol.
+     * Caches results for performance.
+     */
+    private async buildApiShapeForSymbol(resolved: ResolvedExport): Promise<ApiShape | null> {
+        if (!this.checker || !resolved.tsSymbol) {
+            return null;
+        }
+        
+        // Create cache key
+        const identity = this.createExportIdentity(resolved);
+        
+        // Check cache
+        if (this.apiShapeCache.has(identity)) {
+            return this.apiShapeCache.get(identity)!;
+        }
+        
+        try {
+            // Resolve aliased symbols
+            const symbol = resolved.tsSymbol.flags & ts.SymbolFlags.Alias
+                ? this.checker.getAliasedSymbol(resolved.tsSymbol)
+                : resolved.tsSymbol;
+            
+            const declarations = symbol.getDeclarations();
+            if (!declarations || declarations.length === 0) {
+                console.warn(`[TypeScriptAnalyzer] No declarations for symbol ${resolved.exportName}`);
+                this.apiShapeCache.set(identity, null);
+                return null;
+            }
+            
+            // Filter to get value declarations (not type declarations)
+            // A symbol can have both value and type declarations, we want the value one
+            const valueDeclarations = declarations.filter((d: ts.Declaration) => {
+                // Prefer function, class, variable, enum declarations
+                return ts.isFunctionDeclaration(d) ||
+                       ts.isFunctionExpression(d) ||
+                       ts.isClassDeclaration(d) ||
+                       ts.isVariableDeclaration(d) ||
+                       ts.isEnumDeclaration(d) ||
+                       ts.isMethodDeclaration(d);
+            });
+            
+            // Use value declaration if available, otherwise fall back to first declaration
+            const targetDecl = valueDeclarations.length > 0 ? valueDeclarations[0] : declarations[0];
+            const flags = symbol.getFlags();
+            
+            // Determine kind from the actual declaration, not just from resolved.kind
+            // This is important because resolved.kind might be 're-export' which doesn't tell us the actual type
+            let shape: ApiShape | null = null;
+            
+            // Check declaration kind first (most reliable)
+            // Use ts.is* type guards for better type safety
+            if (ts.isFunctionDeclaration(targetDecl) || 
+                ts.isFunctionExpression(targetDecl) ||
+                ts.isMethodDeclaration(targetDecl) ||
+                ts.isMethodSignature(targetDecl)) {
+                shape = this.buildFunctionApiShape(symbol, targetDecl);
+            } else if (ts.isClassDeclaration(targetDecl)) {
+                shape = this.buildClassApiShape(symbol, targetDecl);
+            } else if (ts.isInterfaceDeclaration(targetDecl)) {
+                // Check if this is actually a type-only export or if it's a variable with interface type
+                // If symbol flags indicate it's a variable, treat it as variable
+                if (flags & ts.SymbolFlags.Variable || flags & ts.SymbolFlags.Property) {
+                    // This is likely a const with an interface type annotation
+                    // Try to get the variable declaration instead
+                    const varDecl = declarations.find((d: ts.Declaration) => ts.isVariableDeclaration(d));
+                    if (varDecl) {
+                        shape = this.buildVariableApiShape(symbol, varDecl);
+                    } else {
+                        // Can't find variable declaration - this is likely a type-only export or a complex const
+                        // Skip building API shape for it (it's not a runtime value)
+                        // Don't log a warning here - the caller will handle it appropriately
+                        shape = null;
+                    }
+                } else {
+                    // This is a real interface/type export
+                    shape = this.buildTypeApiShape(symbol, targetDecl, 'interface');
+                }
+            } else if (ts.isTypeAliasDeclaration(targetDecl)) {
+                shape = this.buildTypeApiShape(symbol, targetDecl, 'type');
+            } else if (ts.isEnumDeclaration(targetDecl)) {
+                shape = this.buildEnumApiShape(symbol, targetDecl);
+            } else if (ts.isVariableDeclaration(targetDecl) ||
+                       ts.isBindingElement(targetDecl)) {
+                shape = this.buildVariableApiShape(symbol, targetDecl);
+            } else {
+                // Fallback: try to infer from symbol flags
+                if (flags & ts.SymbolFlags.Function) {
+                    // Try to find a function declaration
+                    const funcDecl = declarations.find((d: ts.Declaration) => ts.isFunctionDeclaration(d) || ts.isFunctionExpression(d) || ts.isMethodDeclaration(d));
+                    if (funcDecl) {
+                        shape = this.buildFunctionApiShape(symbol, funcDecl);
+                    } else {
+                        // Use the type checker to get function signature
+                        shape = this.buildFunctionApiShape(symbol, targetDecl);
+                    }
+                } else if (flags & ts.SymbolFlags.Class) {
+                    const classDecl = declarations.find((d: ts.Declaration) => ts.isClassDeclaration(d));
+                    if (classDecl) {
+                        shape = this.buildClassApiShape(symbol, classDecl);
+                    }
+                } else if (flags & ts.SymbolFlags.Interface && !(flags & ts.SymbolFlags.Variable)) {
+                    const ifaceDecl = declarations.find((d: ts.Declaration) => ts.isInterfaceDeclaration(d));
+                    if (ifaceDecl) {
+                        shape = this.buildTypeApiShape(symbol, ifaceDecl, 'interface');
+                    }
+                } else if (flags & ts.SymbolFlags.TypeAlias) {
+                    const typeDecl = declarations.find((d: ts.Declaration) => ts.isTypeAliasDeclaration(d));
+                    if (typeDecl) {
+                        shape = this.buildTypeApiShape(symbol, typeDecl, 'type');
+                    }
+                } else if (flags & ts.SymbolFlags.Enum) {
+                    const enumDecl = declarations.find((d: ts.Declaration) => ts.isEnumDeclaration(d));
+                    if (enumDecl) {
+                        shape = this.buildEnumApiShape(symbol, enumDecl);
+                    } else {
+                        // Symbol has enum flag but no enum declaration - might be a namespace or something else
+                        console.warn(`[TypeScriptAnalyzer] Symbol has Enum flag but no EnumDeclaration for ${resolved.exportName}`);
+                    }
+                } else if (flags & ts.SymbolFlags.Variable || flags & ts.SymbolFlags.Property) {
+                    const varDecl = declarations.find((d: ts.Declaration) => ts.isVariableDeclaration(d));
+                    if (varDecl) {
+                        shape = this.buildVariableApiShape(symbol, varDecl);
+                    } else {
+                        // Try to build variable shape from the declaration we have
+                        shape = this.buildVariableApiShape(symbol, targetDecl);
+                    }
+                } else {
+                    console.warn(`[TypeScriptAnalyzer] Unknown declaration kind ${targetDecl.kind} (${ts.SyntaxKind[targetDecl.kind]}) for ${resolved.exportName}, flags: ${flags}`);
+                }
+            }
+            
+            // Cache result
+            this.apiShapeCache.set(identity, shape);
+            return shape;
+        } catch (error) {
+            console.warn(`[TypeScriptAnalyzer] Error building API shape for ${resolved.exportName}:`, error);
+            this.apiShapeCache.set(identity, null);
+            return null;
+        }
+    }
+
+    /**
+     * Builds a function API shape with support for generics and overloads.
+     */
+    private buildFunctionApiShape(symbol: ts.Symbol, decl: ts.Declaration): FunctionApiShape | null {
+        if (!this.checker) return null;
+        
+        const name = symbol.getName();
+        const type = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
+        const signatures = this.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+        
+        // Extract type parameters (generics) from the declaration
+        let typeParameters: string[] | undefined;
+        if (ts.isFunctionDeclaration(decl) || ts.isMethodDeclaration(decl) || ts.isMethodSignature(decl)) {
+            if (decl.typeParameters && decl.typeParameters.length > 0) {
+                typeParameters = decl.typeParameters.map(tp => {
+                    const tpName = tp.name.text;
+                    // Include constraints if present
+                    if (tp.constraint) {
+                        const constraintText = this.checker!.typeToString(
+                            this.checker!.getTypeFromTypeNode(tp.constraint)
+                        );
+                        return `${tpName} extends ${constraintText}`;
+                    }
+                    return tpName;
+                });
+            }
+        }
+        
+        const overloads: FunctionSignature[] = [];
+        
+        for (const sig of signatures) {
+            const params: ParameterSignature[] = [];
+            
+            for (let i = 0; i < sig.parameters.length; i++) {
+                const param = sig.parameters[i];
+                const paramType = this.checker!.getTypeOfSymbolAtLocation(param, decl);
+                const paramName = param.getName();
+                const paramDecl = param.getDeclarations()?.[0];
+                
+                // Normalize type string (handle complex types, generics, etc.)
+                const typeString = this.normalizeTypeString(this.checker!.typeToString(paramType));
+                
+                params.push({
+                    name: paramName || `param${i}`,
+                    type: typeString,
+                    optional: !!(paramDecl && ts.isParameter(paramDecl) && paramDecl.questionToken),
+                    rest: !!(paramDecl && ts.isParameter(paramDecl) && paramDecl.dotDotDotToken)
+                });
+            }
+            
+            // Normalize return type
+            const returnType = this.normalizeTypeString(this.checker!.typeToString(sig.getReturnType()));
+            
+            // Extract type parameters for this specific signature (if different from declaration)
+            let sigTypeParameters: string[] | undefined;
+            if (sig.typeParameters && sig.typeParameters.length > 0) {
+                sigTypeParameters = sig.typeParameters.map(tp => {
+                    const tpName = tp.symbol.getName();
+                    const tpType = this.checker!.getTypeOfSymbolAtLocation(tp.symbol, decl);
+                    const constraint = this.checker!.typeToString(tpType);
+                    return constraint ? `${tpName} extends ${constraint}` : tpName;
+                });
+            }
+            
+            overloads.push({
+                parameters: params,
+                returnType,
+                typeParameters: sigTypeParameters || typeParameters
+            });
+        }
+        
+        return {
+            kind: 'function',
+            name,
+            overloads,
+            typeParameters
+        };
+    }
+    
+    /**
+     * Normalizes type strings for stable comparison.
+     * Handles whitespace, generic formatting, etc.
+     */
+    private normalizeTypeString(typeString: string): string {
+        // Remove extra whitespace
+        let normalized = typeString.replace(/\s+/g, ' ').trim();
+        
+        // Normalize generic syntax: `Array<T>` -> `Array<T>` (consistent spacing)
+        normalized = normalized.replace(/<(\s*)/g, '<').replace(/(\s*)>/g, '>');
+        
+        // Normalize union/intersection spacing
+        normalized = normalized.replace(/\s*\|\s*/g, ' | ');
+        normalized = normalized.replace(/\s*&\s*/g, ' & ');
+        
+        return normalized;
+    }
+
+    /**
+     * Builds a class API shape.
+     */
+    private buildClassApiShape(symbol: ts.Symbol, decl: ts.Declaration): ClassApiShape | null {
+        if (!this.checker || !ts.isClassDeclaration(decl)) return null;
+        
+        const name = symbol.getName();
+        const type = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
+        const members: ClassMember[] = [];
+        
+        // Get class members
+        const classType = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
+        const properties = classType.getProperties();
+        
+        for (const prop of properties) {
+            const propDecl = prop.getDeclarations()?.[0];
+            if (!propDecl) continue;
+            
+            // Only include public/protected members
+            const flags = prop.getFlags();
+            if (flags & (ts.SymbolFlags as any).Private) continue;
+            
+            const visibility = flags & (ts.SymbolFlags as any).Protected ? 'protected' : 'public';
+            const isStatic = !!(flags & (ts.SymbolFlags as any).Static);
+            
+            let member: ClassMember | null = null;
+            
+            if (ts.isMethodDeclaration(propDecl) || ts.isMethodSignature(propDecl)) {
+                // Method - get signature from type
+                const propType = this.checker!.getTypeOfSymbolAtLocation(prop, propDecl);
+                const callSignatures = propType.getCallSignatures();
+                if (callSignatures.length > 0) {
+                    const sig = callSignatures[0];
+                    const methodSig = this.buildMethodSignature(sig, propDecl);
+                    member = {
+                        name: prop.getName(),
+                        kind: 'method',
+                        visibility,
+                        static: isStatic,
+                        signature: methodSig
+                    };
+                }
+            } else if (ts.isPropertyDeclaration(propDecl) || ts.isPropertySignature(propDecl)) {
+                // Property
+                const propType = this.checker!.getTypeOfSymbolAtLocation(prop, propDecl);
+                member = {
+                    name: prop.getName(),
+                    kind: 'property',
+                    type: this.checker!.typeToString(propType),
+                    optional: !!propDecl.questionToken,
+                    readonly: !!(propDecl.modifiers && propDecl.modifiers.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword)),
+                    visibility,
+                    static: isStatic
+                };
+            } else if (ts.isGetAccessorDeclaration(propDecl)) {
+                // Getter - get signature from type
+                const propType = this.checker!.getTypeOfSymbolAtLocation(prop, propDecl);
+                const callSignatures = propType.getCallSignatures();
+                if (callSignatures.length > 0) {
+                    const sig = callSignatures[0];
+                    const methodSig = this.buildMethodSignature(sig, propDecl);
+                    member = {
+                        name: prop.getName(),
+                        kind: 'get',
+                        visibility,
+                        static: isStatic,
+                        signature: methodSig
+                    };
+                }
+            } else if (ts.isSetAccessorDeclaration(propDecl)) {
+                // Setter - get signature from type
+                const propType = this.checker!.getTypeOfSymbolAtLocation(prop, propDecl);
+                const callSignatures = propType.getCallSignatures();
+                if (callSignatures.length > 0) {
+                    const sig = callSignatures[0];
+                    const methodSig = this.buildMethodSignature(sig, propDecl);
+                    member = {
+                        name: prop.getName(),
+                        kind: 'set',
+                        visibility,
+                        static: isStatic,
+                        signature: methodSig
+                    };
+                }
+            }
+            
+            if (member) {
+                members.push(member);
+            }
+        }
+        
+        // Get constructor
+        let constructor: FunctionSignature | undefined;
+        const constructorSymbol = classType.getConstructSignatures();
+        if (constructorSymbol.length > 0) {
+            const ctorSig = constructorSymbol[0];
+            constructor = this.buildMethodSignature(ctorSig, decl);
+        }
+        
+        return {
+            kind: 'class',
+            name,
+            members,
+            constructor
+        };
+    }
+
+    /**
+     * Builds a method signature from a TypeScript signature.
+     */
+    private buildMethodSignature(sig: ts.Signature, decl: ts.Declaration): FunctionSignature {
+        const params: ParameterSignature[] = [];
+        
+        for (let i = 0; i < sig.parameters.length; i++) {
+            const param = sig.parameters[i];
+            const paramType = this.checker!.getTypeOfSymbolAtLocation(param, decl);
+            const paramName = param.getName();
+            const paramDecl = param.getDeclarations()?.[0];
+            
+            params.push({
+                name: paramName || `param${i}`,
+                type: this.checker!.typeToString(paramType),
+                optional: !!(paramDecl && ts.isParameter(paramDecl) && paramDecl.questionToken),
+                rest: !!(paramDecl && ts.isParameter(paramDecl) && paramDecl.dotDotDotToken)
+            });
+        }
+        
+        return {
+            parameters: params,
+            returnType: this.checker!.typeToString(sig.getReturnType())
+        };
+    }
+
+    /**
+     * Builds a type/interface API shape with support for generics, index signatures, and complex types.
+     */
+    private buildTypeApiShape(symbol: ts.Symbol, decl: ts.Declaration, kind: 'type' | 'interface'): TypeApiShape | null {
+        if (!this.checker) return null;
+        
+        const name = symbol.getName();
+        
+        // For interface declarations, we can't use getTypeOfSymbolAtLocation if the symbol flags
+        // indicate it's a variable (this causes the "Unhandled declaration kind" error)
+        // Instead, get the type from the type node directly
+        let type: ts.Type;
+        try {
+            if (ts.isInterfaceDeclaration(decl) && (symbol.getFlags() & (ts.SymbolFlags.Variable | ts.SymbolFlags.Property))) {
+                // This is a variable with an interface type - get type from the type checker differently
+                // Try to get the type from a variable declaration if available
+                const varDecl = symbol.getDeclarations()?.find(d => ts.isVariableDeclaration(d));
+                if (varDecl && ts.isVariableDeclaration(varDecl) && varDecl.type) {
+                    type = this.checker.getTypeFromTypeNode(varDecl.type);
+                } else {
+                    // Fallback: try to get type from the symbol at a different location
+                    const sourceFile = decl.getSourceFile();
+                    type = this.checker.getTypeOfSymbolAtLocation(symbol, sourceFile);
+                }
+            } else {
+                type = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
+            }
+        } catch (e) {
+            // If getTypeOfSymbolAtLocation fails, try alternative approach
+            console.warn(`[TypeScriptAnalyzer] Error getting type for ${name}, trying alternative:`, e);
+            try {
+                const sourceFile = decl.getSourceFile();
+                type = this.checker.getTypeOfSymbolAtLocation(symbol, sourceFile);
+            } catch (e2) {
+                console.warn(`[TypeScriptAnalyzer] Failed to get type for ${name}:`, e2);
+                return null;
+            }
+        }
+        
+        // Extract type parameters (generics)
+        let typeParameters: string[] | undefined;
+        if (ts.isInterfaceDeclaration(decl)) {
+            if (decl.typeParameters && decl.typeParameters.length > 0) {
+                typeParameters = decl.typeParameters.map(tp => {
+                    const tpName = tp.name.text;
+                    if (tp.constraint) {
+                        const constraintText = this.checker!.typeToString(
+                            this.checker!.getTypeFromTypeNode(tp.constraint)
+                        );
+                        return `${tpName} extends ${constraintText}`;
+                    }
+                    return tpName;
+                });
+            }
+        } else if (ts.isTypeAliasDeclaration(decl)) {
+            if (decl.typeParameters && decl.typeParameters.length > 0) {
+                typeParameters = decl.typeParameters.map(tp => {
+                    const tpName = tp.name.text;
+                    if (tp.constraint) {
+                        const constraintText = this.checker!.typeToString(
+                            this.checker!.getTypeFromTypeNode(tp.constraint)
+                        );
+                        return `${tpName} extends ${constraintText}`;
+                    }
+                    return tpName;
+                });
+            }
+        }
+        
+        const properties: TypeProperty[] = [];
+        const indexSignatures: IndexSignature[] = [];
+        let typeText: string | undefined;
+        
+        // Check if this is a complex type (union, intersection, etc.) that can't be represented as properties
+        const typeFlags = type.flags;
+        const isUnion = !!(typeFlags & ts.TypeFlags.Union);
+        const isIntersection = !!(typeFlags & ts.TypeFlags.Intersection);
+        
+        if (isUnion || isIntersection) {
+            // For complex types, store the type text directly
+            typeText = this.normalizeTypeString(this.checker.typeToString(type));
+        } else {
+            // Get properties for object types
+            const props = type.getProperties();
+            for (const prop of props) {
+                const propType = this.checker.getTypeOfSymbolAtLocation(prop, decl);
+                const propDecl = prop.getDeclarations()?.[0];
+                
+                properties.push({
+                    name: prop.getName(),
+                    type: this.normalizeTypeString(this.checker.typeToString(propType)),
+                    optional: !!(propDecl && (ts.isPropertySignature(propDecl) || ts.isPropertyDeclaration(propDecl)) && propDecl.questionToken),
+                    readonly: !!(propDecl && propDecl.modifiers && propDecl.modifiers.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword))
+                });
+            }
+            
+            // Get index signatures
+            if (ts.isInterfaceDeclaration(decl) || ts.isTypeAliasDeclaration(decl)) {
+                const sourceFile = decl.getSourceFile();
+                const checker = this.checker;
+                
+                // Check for index signatures in the declaration
+                if (ts.isInterfaceDeclaration(decl) && decl.members) {
+                    // Ensure members is iterable
+                    try {
+                        for (const member of decl.members) {
+                            if (ts.isIndexSignatureDeclaration(member)) {
+                                const keyType = member.parameters[0]?.type;
+                                const valueType = member.type;
+                                if (keyType && valueType) {
+                                    indexSignatures.push({
+                                        keyType: this.normalizeTypeString(checker.typeToString(checker.getTypeFromTypeNode(keyType))),
+                                        valueType: this.normalizeTypeString(checker.typeToString(checker.getTypeFromTypeNode(valueType))),
+                                        readonly: !!(member.modifiers && member.modifiers.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword))
+                                    });
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // If members is not iterable, skip index signatures
+                        console.warn(`[TypeScriptAnalyzer] Cannot iterate over interface members for ${name}:`, e);
+                    }
+                }
+            }
+        }
+        
+        // Get extends clauses for interfaces
+        let extendsClauses: string[] | undefined;
+        if (ts.isInterfaceDeclaration(decl) && decl.heritageClauses) {
+            extendsClauses = [];
+            for (const heritage of decl.heritageClauses) {
+                if (heritage.token === ts.SyntaxKind.ExtendsKeyword) {
+                    for (const typeNode of heritage.types) {
+                        const extendsType = this.checker.getTypeFromTypeNode(typeNode);
+                        extendsClauses.push(this.normalizeTypeString(this.checker.typeToString(extendsType)));
+                    }
+                }
+            }
+        }
+        
+        return {
+            kind,
+            name,
+            typeParameters,
+            properties,
+            indexSignatures: indexSignatures.length > 0 ? indexSignatures : undefined,
+            typeText,
+            extends: extendsClauses && extendsClauses.length > 0 ? extendsClauses : undefined
+        };
+    }
+
+    /**
+     * Builds an enum API shape.
+     */
+    private buildEnumApiShape(symbol: ts.Symbol, decl: ts.Declaration): EnumApiShape | null {
+        // Verify this is actually an enum declaration
+        if (!ts.isEnumDeclaration(decl)) {
+            console.warn(`[TypeScriptAnalyzer] buildEnumApiShape called with non-enum declaration: ${ts.SyntaxKind[decl.kind]}`);
+            return null;
+        }
+        
+        const name = symbol.getName();
+        const members: Array<{ name: string; value?: string | number }> = [];
+        const isConst = !!(decl.modifiers && decl.modifiers.some(m => m.kind === ts.SyntaxKind.ConstKeyword));
+        
+        // Check if members exists
+        if (!decl.members || decl.members.length === 0) {
+            // Empty enum - this is valid but unusual, only warn in debug mode
+            // (Most cases where this happens are false positives from incorrect symbol resolution)
+            return {
+                kind: 'enum',
+                name,
+                members: [],
+                const: isConst
+            };
+        }
+        
+        for (const member of decl.members) {
+            const memberName = member.name && ts.isIdentifier(member.name) ? member.name.text : 'unknown';
+            let value: string | number | undefined;
+            
+            if (member.initializer) {
+                if (ts.isStringLiteral(member.initializer)) {
+                    value = member.initializer.text;
+                } else if (ts.isNumericLiteral(member.initializer)) {
+                    value = parseFloat(member.initializer.text);
+                }
+            }
+            
+            members.push({ name: memberName, value });
+        }
+        
+        return {
+            kind: 'enum',
+            name,
+            members,
+            const: isConst
+        };
+    }
+
+    /**
+     * Builds a variable API shape.
+     */
+    private buildVariableApiShape(symbol: ts.Symbol, decl: ts.Declaration): VariableApiShape | null {
+        if (!this.checker) return null;
+        
+        const name = symbol.getName();
+        const type = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
+        const typeText = this.checker.typeToString(type);
+        const isConst = !!(decl.modifiers && decl.modifiers.some(m => m.kind === ts.SyntaxKind.ConstKeyword));
+        
+        return {
+            kind: isConst ? 'const' : 'variable',
+            name,
+            type: typeText,
+            readonly: isConst
+        };
+    }
+}

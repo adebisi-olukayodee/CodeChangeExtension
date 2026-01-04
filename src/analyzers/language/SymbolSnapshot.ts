@@ -3,6 +3,11 @@
  * Used for comparing before/after states to detect changes.
  */
 
+export type PackageSnapshot = {
+    type?: 'module' | 'commonjs' | 'missing';
+    exports?: unknown; // keep as unknown, we only need presence/emptiness
+};
+
 export interface SymbolSnapshot {
     /** File path */
     filePath: string;
@@ -25,8 +30,34 @@ export interface SymbolSnapshot {
     /** Imported modules */
     imports: ImportInfo[];
     
+    /** Export statistics - split into buckets for accurate tracking */
+    exportStats?: {
+        /** Direct exports declared in this file (export const, export function, etc.) */
+        directExports: number;
+        /** Resolved symbols from export * from / export {x} from (runtime) */
+        reExportedSymbols: number;
+        /** Resolved symbols from export type ... from (type-only) */
+        typeOnlyExports: number;
+        /** Total exports (directExports + reExportedSymbols + typeOnlyExports) */
+        exportsTotal: number;
+        /** Runtime exports (directExports_runtime + reExportedSymbols_runtime) */
+        exportsRuntime: number;
+        /** Type exports (directExports_type + typeOnlyExports + reExportedSymbols_typeOnly) */
+        exportsType: number;
+        /** Unique export keys (for deduplication validation) */
+        exportsUnique: number;
+        /** Exports with declaration nodes (for signature inspection) */
+        exportsWithDeclarations: number;
+        /** Unresolved re-export groups (for diagnostics) */
+        reexportGroupsUnresolved?: number;
+    };
+    
     /** Type information for symbols (when type checker available) */
     typeInfo?: Map<string, TypeInfo>;
+    /** Module system (for JavaScript files) */
+    moduleSystem?: 'cjs' | 'esm' | 'mixed' | 'unknown';
+    /** Package.json metadata (type, exports map) */
+    packageJson?: PackageSnapshot;
 }
 
 export interface SymbolInfo {
@@ -78,6 +109,16 @@ export interface ExportInfo {
     exportedName?: string;
     /** Local name (if re-exported as different name: export { x as y }) - deprecated, use sourceName */
     localName?: string;
+    /** Is this a type-only export (export type ... from or export { type ... } from) */
+    isTypeOnly?: boolean;
+    /** Declaration file path (resolved) */
+    declFilePath?: string;
+    /** Declaration start position */
+    declPos?: number;
+    /** Declaration end position */
+    declEnd?: number;
+    /** TypeScript symbol ID (for stable identity) */
+    tsSymbolId?: string;
 }
 
 export interface ImportInfo {
@@ -128,6 +169,14 @@ export interface ExportChange {
     before: ExportInfo;
 }
 
+export interface PackageChange {
+    ruleId: string;
+    severity: 'breaking' | 'warning' | 'info';
+    file: string;
+    symbol: string;
+    message: string;
+}
+
 export interface SnapshotDiff {
     /** Changed symbols */
     changedSymbols: SymbolChange[];
@@ -143,5 +192,6 @@ export interface SnapshotDiff {
         removed: ExportInfo[];
         modified: ExportInfo[] | ExportChange[]; // Can be either format for backward compatibility
     };
+    /** Package.json changes (exports map, type) */
+    packageChanges: PackageChange[];
 }
-

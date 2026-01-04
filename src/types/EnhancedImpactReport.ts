@@ -109,5 +109,29 @@ export enum BreakingChangeRule {
     // Export changes
     EXPORT_REMOVED = 'TSAPI-EXP-001',        // Export removed
     EXPORT_TYPE_CHANGED = 'TSAPI-EXP-002',   // Export type changed (named -> default, etc.)
+    
+    // JavaScript heuristic rules (warnings, not breaking)
+    // These are structural-only and may miss runtime-breaking changes
+    JSAPI_FN_REMOVED = 'JSAPI-FN-001',       // Exported function removed (heuristic)
+    JSAPI_FN_PARAM_COUNT_DECREASED = 'JSAPI-FN-002', // Function parameter count decreased (heuristic)
+    JSAPI_FN_REST_PARAM_REMOVED = 'JSAPI-FN-003',    // Rest parameter removed (heuristic)
+    JSAPI_CLS_REMOVED = 'JSAPI-CLS-001',     // Exported class removed (heuristic)
+    JSAPI_CLS_METHOD_REMOVED = 'JSAPI-CLS-002', // Public method removed from class (heuristic)
+    JSAPI_CLS_CONSTRUCTOR_REMOVED = 'JSAPI-CLS-003', // Constructor removed from class (heuristic)
+    JSAPI_EXPORT_REMOVED = 'JSAPI-EXP-001',  // Export removed (structural - reliable, breaking)
+    JSAPI_DEFAULT_EXPORT_REMOVED = 'JSAPI-EXP-002', // Default export removed (breaking)
+    JSAPI_EXPORT_STAR_REMOVED = 'JSAPI-EXP-003', // Export star removed (breaking)
+    JSAPI_EXPORT_ALIAS_CHANGED = 'JSAPI-EXP-004', // Export alias changed (breaking)
+    JSAPI_DEFAULT_EXPORT_KIND_CHANGED = 'JSAPI-EXP-005', // Default export kind changed (breaking)
+    JSAPI_EXPORT_TYPE_CHANGED = 'JSAPI-EXP-006', // Named to default export (breaking)
+    JSAPI_DEFAULT_TO_NAMED_EXPORT = 'JSAPI-EXP-007', // Default to named export (breaking)
+    JSAPI_BARREL_EXPORT_REMOVED = 'JSAPI-EXP-008', // Barrel export removed (breaking)
+    JSAPI_CJS_EXPORT_REMOVED = 'JSAPI-CJS-001', // CommonJS export removed (breaking)
+    JSAPI_CJS_DEFAULT_SHAPE_CHANGED = 'JSAPI-CJS-002', // CJS default export shape changed (warning)
+    JSAPI_MODULE_SYSTEM_CHANGED = 'JSAPI-MOD-001', // Module system changed (CJS <-> ESM) (warning)
+    JSAPI_PACKAGE_TYPE_CHANGED = 'JSAPI-MOD-002', // package.json type changed (warning)
+    JSAPI_IMPORT_SPECIFIER_CHANGED = 'JSAPI-MOD-003', // Import specifier changed (info)
+    JSAPI_PACKAGE_EXPORTS_CHANGED = 'JSAPI-MOD-004', // package.json exports map changed (breaking)
+    JSAPI_JSX_COMPONENT_REMOVED = 'JSAPI-JSX-001', // JSX component removed (breaking)
 }
 

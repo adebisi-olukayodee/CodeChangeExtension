@@ -44,5 +44,28 @@ var BreakingChangeRule;
     // Export changes
     BreakingChangeRule["EXPORT_REMOVED"] = "TSAPI-EXP-001";
     BreakingChangeRule["EXPORT_TYPE_CHANGED"] = "TSAPI-EXP-002";
+    // JavaScript heuristic rules (warnings, not breaking)
+    // These are structural-only and may miss runtime-breaking changes
+    BreakingChangeRule["JSAPI_FN_REMOVED"] = "JSAPI-FN-001";
+    BreakingChangeRule["JSAPI_FN_PARAM_COUNT_DECREASED"] = "JSAPI-FN-002";
+    BreakingChangeRule["JSAPI_FN_REST_PARAM_REMOVED"] = "JSAPI-FN-003";
+    BreakingChangeRule["JSAPI_CLS_REMOVED"] = "JSAPI-CLS-001";
+    BreakingChangeRule["JSAPI_CLS_METHOD_REMOVED"] = "JSAPI-CLS-002";
+    BreakingChangeRule["JSAPI_CLS_CONSTRUCTOR_REMOVED"] = "JSAPI-CLS-003";
+    BreakingChangeRule["JSAPI_EXPORT_REMOVED"] = "JSAPI-EXP-001";
+    BreakingChangeRule["JSAPI_DEFAULT_EXPORT_REMOVED"] = "JSAPI-EXP-002";
+    BreakingChangeRule["JSAPI_EXPORT_STAR_REMOVED"] = "JSAPI-EXP-003";
+    BreakingChangeRule["JSAPI_EXPORT_ALIAS_CHANGED"] = "JSAPI-EXP-004";
+    BreakingChangeRule["JSAPI_DEFAULT_EXPORT_KIND_CHANGED"] = "JSAPI-EXP-005";
+    BreakingChangeRule["JSAPI_EXPORT_TYPE_CHANGED"] = "JSAPI-EXP-006";
+    BreakingChangeRule["JSAPI_DEFAULT_TO_NAMED_EXPORT"] = "JSAPI-EXP-007";
+    BreakingChangeRule["JSAPI_BARREL_EXPORT_REMOVED"] = "JSAPI-EXP-008";
+    BreakingChangeRule["JSAPI_CJS_EXPORT_REMOVED"] = "JSAPI-CJS-001";
+    BreakingChangeRule["JSAPI_CJS_DEFAULT_SHAPE_CHANGED"] = "JSAPI-CJS-002";
+    BreakingChangeRule["JSAPI_MODULE_SYSTEM_CHANGED"] = "JSAPI-MOD-001";
+    BreakingChangeRule["JSAPI_PACKAGE_TYPE_CHANGED"] = "JSAPI-MOD-002";
+    BreakingChangeRule["JSAPI_IMPORT_SPECIFIER_CHANGED"] = "JSAPI-MOD-003";
+    BreakingChangeRule["JSAPI_PACKAGE_EXPORTS_CHANGED"] = "JSAPI-MOD-004";
+    BreakingChangeRule["JSAPI_JSX_COMPONENT_REMOVED"] = "JSAPI-JSX-001";
 })(BreakingChangeRule = exports.BreakingChangeRule || (exports.BreakingChangeRule = {}));
 //# sourceMappingURL=EnhancedImpactReport.js.map

@@ -328,11 +328,23 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "compile:regression": "node scripts/build-regression.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "npm run compile && node ./out/test/runTest.js",
-    "test:watch": "npm run watch & node --watch ./out/test/runTest.js"
+    "test:watch": "npm run watch & node --watch ./out/test/runTest.js",
+    "regression": "npm run compile:regression && node scripts/run-regressions.mjs",
+    "regression:date-fns": "npm run compile:regression && node scripts/run-regressions.mjs date-fns-v2-to-v3",
+    "regression:zod": "npm run compile:regression && node scripts/run-regressions.mjs zod-v3-to-v4",
+    "regression:axios": "npm run compile:regression && node scripts/run-regressions.mjs axios-0.27-to-1.0",
+    "test:regression": "node regressions/test-runner.mjs",
+    "test:regression:date-fns": "node regressions/test-runner.mjs date-fns-v2-to-v3",
+    "test:regression:zod": "node regressions/test-runner.mjs zod-v3-to-v4",
+    "test:regression:axios": "node regressions/test-runner.mjs axios-0.27-to-1.0",
+    "promote:expected": "node scripts/promote-expected.mjs",
+    "setup:regression": "node scripts/setup-new-regression.mjs",
+    "monitor:regression": "node scripts/monitor-regression.mjs"
   },
   "devDependencies": {
     "@types/babel__traverse": "^7.28.0",

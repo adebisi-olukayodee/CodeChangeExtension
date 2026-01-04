@@ -1,0 +1,285 @@
+{
+  "metadata": {
+    "beforeSha": "867360540c66f8fcf004f8aebc8522f7561f0bf2",
+    "afterSha": "95b84c7e4ca73975dbd53b0e51b84fd053de99d7",
+    "testName": "date-fns-v2-to-v3",
+    "description": "date-fns-v2-to-v3 regression test",
+    "pinnedRefs": {
+      "before": "8673605",
+      "after": "95b84c7"
+    }
+  },
+  "counts": {
+    "exportsDiff": {
+      "added": 74,
+      "removed": 18,
+      "changed": 0
+    },
+    "apiDiff": {
+      "added": 242,
+      "removed": 239,
+      "modified": 0,
+      "renamed": 0
+    }
+  },
+  "regressionChecks": {
+    "removedExportsDetected": true,
+    "removedExportsCount": 239,
+    "modifiedExportsCount": 0,
+    "addedExportsCount": 242,
+    "renamedExportsCount": 0,
+    "hasBreakingChanges": true
+  },
+  "sampleSymbols": {
+    "removed": [
+      {
+        "name": "add",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addBusinessDays",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addDays",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addHours",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addISOWeekYears",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addMilliseconds",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addMinutes",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addMonths",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addQuarters",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addSeconds",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addWeeks",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addYears",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "areIntervalsOverlapping",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "clamp",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "closestIndexTo",
+        "kind": "enum",
+        "shapeName": "default",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      }
+    ],
+    "added": [
+      {
+        "name": "add",
+        "kind": "enum",
+        "shapeName": "add",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addBusinessDays",
+        "kind": "enum",
+        "shapeName": "addBusinessDays",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addDays",
+        "kind": "enum",
+        "shapeName": "addDays",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addHours",
+        "kind": "enum",
+        "shapeName": "addHours",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addISOWeekYears",
+        "kind": "enum",
+        "shapeName": "addISOWeekYears",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addMilliseconds",
+        "kind": "enum",
+        "shapeName": "addMilliseconds",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addMinutes",
+        "kind": "enum",
+        "shapeName": "addMinutes",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addMonths",
+        "kind": "enum",
+        "shapeName": "addMonths",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addQuarters",
+        "kind": "enum",
+        "shapeName": "addQuarters",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addSeconds",
+        "kind": "enum",
+        "shapeName": "addSeconds",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addWeeks",
+        "kind": "enum",
+        "shapeName": "addWeeks",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addYears",
+        "kind": "enum",
+        "shapeName": "addYears",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "areIntervalsOverlapping",
+        "kind": "enum",
+        "shapeName": "areIntervalsOverlapping",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "clamp",
+        "kind": "enum",
+        "shapeName": "clamp",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "closestIndexTo",
+        "kind": "enum",
+        "shapeName": "closestIndexTo",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      }
+    ]
+  },
+  "assertions": {
+    "minShapesBuilt": 193,
+    "maxShapesBuilt": 291,
+    "mustHaveRemovedExports": true,
+    "mustHaveAddedExports": true
+  }
+}

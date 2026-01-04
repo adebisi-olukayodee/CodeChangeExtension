@@ -5,6 +5,7 @@
 import * as path from 'path';
 import { ILanguageAnalyzer } from '../ILanguageAnalyzer';
 import { TypeScriptAnalyzer } from './TypeScriptAnalyzer';
+import { JavaScriptAnalyzer } from './JavaScriptAnalyzer';
 import { PythonAnalyzer } from './PythonAnalyzer';
 import { JavaAnalyzer } from './JavaAnalyzer';
 
@@ -41,6 +42,10 @@ export class LanguageAnalyzerFactory {
         if (['.ts', '.tsx'].includes(ext)) {
             console.log(`[LanguageAnalyzerFactory] Creating TypeScriptAnalyzer (projectRoot: ${this.projectRoot || 'none'})`);
             analyzer = new TypeScriptAnalyzer(this.projectRoot || undefined);
+        } else if (['.js', '.jsx'].includes(ext)) {
+            console.log(`[LanguageAnalyzerFactory] Creating JavaScriptAnalyzer (heuristic analysis - projectRoot: ${this.projectRoot || 'none'})`);
+            console.log(`[LanguageAnalyzerFactory] WARNING: JavaScript analysis is heuristic and may miss runtime-breaking changes`);
+            analyzer = new JavaScriptAnalyzer(this.projectRoot || undefined);
         } else if (ext === '.py') {
             console.log(`[LanguageAnalyzerFactory] Creating PythonAnalyzer`);
             analyzer = new PythonAnalyzer();
@@ -68,6 +73,9 @@ export class LanguageAnalyzerFactory {
             case 'typescript':
             case 'ts':
                 return new TypeScriptAnalyzer(this.projectRoot || undefined);
+            case 'javascript':
+            case 'js':
+                return new JavaScriptAnalyzer(this.projectRoot || undefined);
             case 'python':
             case 'py':
                 return new PythonAnalyzer();
@@ -82,14 +90,14 @@ export class LanguageAnalyzerFactory {
      * Get all supported languages
      */
     static getSupportedLanguages(): string[] {
-        return ['typescript', 'python', 'java'];
+        return ['typescript', 'javascript', 'python', 'java'];
     }
 
     /**
      * Check if a file extension is supported
      */
     static isSupported(ext: string): boolean {
-        const supported = ['.ts', '.tsx', '.py', '.java'];
+        const supported = ['.ts', '.tsx', '.js', '.jsx', '.py', '.java'];
         return supported.includes(ext.toLowerCase());
     }
 

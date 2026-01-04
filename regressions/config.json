@@ -1,0 +1,67 @@
+{
+  "repos": [
+    {
+      "id": "date-fns-v2-to-v3",
+      "url": "https://github.com/date-fns/date-fns.git",
+      "beforeRef": "8673605",
+      "afterRef": "95b84c7",
+      "mode": "api-snapshot",
+      "paths": [
+        "src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Heavy re-exports (barrel files), function-heavy API"
+    },
+    {
+      "id": "zod-v3-to-v4",
+      "url": "https://github.com/colinhacks/zod.git",
+      "beforeRef": "v3.22.4",
+      "afterRef": "v4.0.1",
+      "mode": "api-snapshot",
+      "paths": [
+        "src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Type-heavy library with classes and type exports"
+    },
+    {
+      "id": "axios-0.27-to-1.0",
+      "url": "https://github.com/axios/axios.git",
+      "beforeRef": "v0.27.2",
+      "afterRef": "v1.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "index.d.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Default export + named exports, class-based",
+      "skip": true
+    },
+    {
+      "id": "lodash-es-4.17-to-4.18",
+      "url": "https://github.com/lodash/lodash.git",
+      "beforeRef": "4.17.21",
+      "afterRef": "4.18.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "es/index.js"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Function-heavy with many re-exports",
+      "skip": true
+    },
+    {
+      "id": "express-4.17-to-4.18",
+      "url": "https://github.com/expressjs/express.git",
+      "beforeRef": "4.17.5",
+      "afterRef": "4.18.2",
+      "mode": "api-snapshot",
+      "paths": [
+        "index.d.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Class-based with middleware, default export",
+      "skip": true
+    }
+  ]
+}

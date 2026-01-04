@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "beforeSha": "e7a9b9b3033991be6b4225f1be21da39c250bbb0",
+    "afterSha": "b259211157ec62299d7e2fad005827979d087b21",
+    "testName": "zod-v3-to-v4",
+    "description": "zod-v3-to-v4 regression test",
+    "pinnedRefs": {
+      "before": "e7a9b9b",
+      "after": "b259211"
+    }
+  },
+  "counts": {
+    "exportsDiff": {
+      "added": 33,
+      "removed": 0,
+      "changed": 0
+    },
+    "apiDiff": {
+      "added": 0,
+      "removed": 0,
+      "modified": 0,
+      "renamed": 0
+    }
+  },
+  "regressionChecks": {
+    "removedExportsDetected": false,
+    "removedExportsCount": 0,
+    "modifiedExportsCount": 0,
+    "addedExportsCount": 0,
+    "renamedExportsCount": 0,
+    "hasBreakingChanges": false
+  },
+  "sampleSymbols": {
+    "removed": [],
+    "added": []
+  },
+  "assertions": {
+    "minShapesBuilt": 0,
+    "maxShapesBuilt": 0,
+    "mustHaveRemovedExports": false,
+    "mustHaveAddedExports": false
+  }
+}

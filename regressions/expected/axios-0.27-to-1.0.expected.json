@@ -1,0 +1,3 @@
+{
+  "note": "Initial golden file. Run regressions once, copy *.actual.json here, then lock it."
+}
