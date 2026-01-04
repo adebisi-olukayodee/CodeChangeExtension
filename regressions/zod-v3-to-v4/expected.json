@@ -11,33 +11,123 @@
   },
   "counts": {
     "exportsDiff": {
-      "added": 33,
-      "removed": 0,
+      "added": 27,
+      "removed": 241,
       "changed": 0
     },
     "apiDiff": {
-      "added": 0,
-      "removed": 0,
+      "added": 8,
+      "removed": 3,
       "modified": 0,
       "renamed": 0
     }
   },
   "regressionChecks": {
-    "removedExportsDetected": false,
-    "removedExportsCount": 0,
+    "removedExportsDetected": true,
+    "removedExportsCount": 3,
     "modifiedExportsCount": 0,
-    "addedExportsCount": 0,
+    "addedExportsCount": 8,
     "renamedExportsCount": 0,
-    "hasBreakingChanges": false
+    "hasBreakingChanges": true
   },
   "sampleSymbols": {
-    "removed": [],
-    "added": []
+    "removed": [
+      {
+        "name": "setErrorMap",
+        "kind": "enum",
+        "shapeName": "setErrorMap",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "getErrorMap",
+        "kind": "enum",
+        "shapeName": "getErrorMap",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addIssueToContext",
+        "kind": "enum",
+        "shapeName": "addIssueToContext",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      }
+    ],
+    "added": [
+      {
+        "name": "registry",
+        "kind": "enum",
+        "shapeName": "registry",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "config",
+        "kind": "enum",
+        "shapeName": "config",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "clone",
+        "kind": "enum",
+        "shapeName": "clone",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "treeifyError",
+        "kind": "enum",
+        "shapeName": "treeifyError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "prettifyError",
+        "kind": "enum",
+        "shapeName": "prettifyError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "formatError",
+        "kind": "enum",
+        "shapeName": "formatError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "flattenError",
+        "kind": "enum",
+        "shapeName": "flattenError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "toJSONSchema",
+        "kind": "enum",
+        "shapeName": "toJSONSchema",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      }
+    ]
   },
   "assertions": {
-    "minShapesBuilt": 0,
-    "maxShapesBuilt": 0,
-    "mustHaveRemovedExports": false,
-    "mustHaveAddedExports": false
+    "minShapesBuilt": 6,
+    "maxShapesBuilt": 10,
+    "mustHaveRemovedExports": true,
+    "mustHaveAddedExports": true
   }
 }
