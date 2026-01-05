@@ -465,26 +465,26 @@ export class TypeScriptAnalyzer {
      * Caches results for performance.
      */
     resolveModulePath(moduleSpecifier, fromFile) {
-        console.log("[RESOLVER HIT] resolveModulePath called", { specifier: moduleSpecifier, from: fromFile });
         const cacheKey = `${moduleSpecifier}|${fromFile}`;
-        // Check cache
+        // Check cache - only log on cache miss
         if (this.moduleResolutionCache.has(cacheKey)) {
-            const cached = this.moduleResolutionCache.get(cacheKey);
-            console.log("[RESOLVER HIT] Using cached result:", cached);
-            return cached;
+            return this.moduleResolutionCache.get(cacheKey);
         }
         const fromDir = path.dirname(fromFile);
         const tsApi = this.getTsApi();
         // C) Use TypeScript's resolver when possible (best)
         try {
             // Try Node16/NodeNext first (modern ESM), then fallback to NodeJs
-            let moduleResolutionKind = tsApi.ModuleResolutionKind?.NodeJs;
+            let moduleResolutionKind = tsApi.ModuleResolutionKind?.NodeJs ?? 2; // Default to NodeJs
             if (tsApi.ModuleResolutionKind) {
-                if (tsApi.ModuleResolutionKind.Node16) {
-                    moduleResolutionKind = tsApi.ModuleResolutionKind.Node16;
+                // Prefer Node16 or NodeNext if available (modern ESM support)
+                const node16 = tsApi.ModuleResolutionKind.Node16;
+                const nodeNext = tsApi.ModuleResolutionKind.NodeNext;
+                if (node16 !== undefined) {
+                    moduleResolutionKind = node16;
                 }
-                else if (tsApi.ModuleResolutionKind.NodeNext) {
-                    moduleResolutionKind = tsApi.ModuleResolutionKind.NodeNext;
+                else if (nodeNext !== undefined) {
+                    moduleResolutionKind = nodeNext;
                 }
             }
             const compilerOptions = {
@@ -500,7 +500,7 @@ export class TypeScriptAnalyzer {
             const resolved = tsApi.resolveModuleName(moduleSpecifier, fromFile, compilerOptions, tsApi.sys).resolvedModule?.resolvedFileName;
             if (resolved && fs.existsSync(resolved)) {
                 this.moduleResolutionCache.set(cacheKey, resolved);
-                console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${resolved}`);
+                // Only log on successful resolution (cache miss)
                 return resolved;
             }
         }
@@ -813,8 +813,8 @@ export class TypeScriptAnalyzer {
      */
     async buildSnapshot(filePath, content) {
         console.log(`[TypeScriptAnalyzer] Building snapshot for: ${filePath}`);
-        console.log(`[TypeScriptAnalyzer] Content length: ${content.length} chars`);
-        console.log(`[TypeScriptAnalyzer] Content preview (first 200 chars): ${content.substring(0, 200).replace(/\n/g, '\\n')}`);
+        const preview = content.replace(/\s+/g, ' ').slice(0, 160).trim();
+        console.log(`[TypeScriptAnalyzer] Content length: ${content.length} chars, preview="${preview}${content.length > 160 ? '...' : ''}"`);
         try {
             // Normalize file path to absolute
             const normalizedPath = path.isAbsolute(filePath) ? path.normalize(filePath) : path.resolve(filePath);
@@ -2747,20 +2747,38 @@ export class TypeScriptAnalyzer {
             return this.apiShapeCache.get(identity);
         }
         try {
-            // Resolve aliased symbols
-            const symbol = resolved.tsSymbol.flags & tsApi.SymbolFlags.Alias
-                ? this.checker.getAliasedSymbol(resolved.tsSymbol)
-                : resolved.tsSymbol;
+            // Always de-alias symbols first - many re-exports come through as aliases
+            let symbol = resolved.tsSymbol;
+            if (symbol.flags & tsApi.SymbolFlags.Alias) {
+                try {
+                    symbol = this.checker.getAliasedSymbol(symbol);
+                }
+                catch (error) {
+                    // If getAliasedSymbol fails, use the original symbol
+                    // This can happen with certain TypeScript internal states
+                    symbol = resolved.tsSymbol;
+                }
+            }
             const declarations = symbol.getDeclarations();
             if (!declarations || declarations.length === 0) {
-                console.warn(`[TypeScriptAnalyzer] No declarations for symbol ${resolved.exportName}`);
-                this.apiShapeCache.set(identity, null);
-                return null;
+                // Try to build shape from TypeChecker for type-only exports
+                return this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity);
             }
-            // Filter to get value declarations (not type declarations)
-            // A symbol can have both value and type declarations, we want the value one
-            const valueDeclarations = declarations.filter((d) => {
-                // Prefer function, class, variable, enum declarations
+            // Filter out only truly invalid declaration kinds (JSX elements)
+            // Allow: FunctionDeclaration, ClassDeclaration, InterfaceDeclaration, TypeAliasDeclaration,
+            //        EnumDeclaration, VariableDeclaration, ModuleDeclaration, ImportEqualsDeclaration
+            const validDeclarations = declarations.filter((d) => {
+                const kind = d.kind;
+                // Only skip JSX elements (282-284) - everything else is potentially valid
+                // SourceFile (308) can be valid for namespace/module exports
+                return kind !== 282 && kind !== 283 && kind !== 284;
+            });
+            if (validDeclarations.length === 0) {
+                // All declarations were JSX elements - try TypeChecker fallback
+                return this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity);
+            }
+            // Prefer runtime value declarations, but fall back to type declarations
+            const valueDeclarations = validDeclarations.filter((d) => {
                 return tsApi.isFunctionDeclaration(d) ||
                     tsApi.isFunctionExpression(d) ||
                     tsApi.isClassDeclaration(d) ||
@@ -2768,8 +2786,8 @@ export class TypeScriptAnalyzer {
                     tsApi.isEnumDeclaration(d) ||
                     tsApi.isMethodDeclaration(d);
             });
-            // Use value declaration if available, otherwise fall back to first declaration
-            const targetDecl = valueDeclarations.length > 0 ? valueDeclarations[0] : declarations[0];
+            // Use value declaration if available, otherwise use any valid declaration (including types)
+            const targetDecl = valueDeclarations.length > 0 ? valueDeclarations[0] : validDeclarations[0];
             const flags = symbol.getFlags();
             // Determine kind from the actual declaration, not just from resolved.kind
             // This is important because resolved.kind might be 're-export' which doesn't tell us the actual type
@@ -2786,26 +2804,8 @@ export class TypeScriptAnalyzer {
                 shape = this.buildClassApiShape(symbol, targetDecl);
             }
             else if (tsApi.isInterfaceDeclaration(targetDecl)) {
-                // Check if this is actually a type-only export or if it's a variable with interface type
-                // If symbol flags indicate it's a variable, treat it as variable
-                if (flags & tsApi.SymbolFlags.Variable || flags & tsApi.SymbolFlags.Property) {
-                    // This is likely a const with an interface type annotation
-                    // Try to get the variable declaration instead
-                    const varDecl = declarations.find((d) => tsApi.isVariableDeclaration(d));
-                    if (varDecl) {
-                        shape = this.buildVariableApiShape(symbol, varDecl);
-                    }
-                    else {
-                        // Can't find variable declaration - this is likely a type-only export or a complex const
-                        // Skip building API shape for it (it's not a runtime value)
-                        // Don't log a warning here - the caller will handle it appropriately
-                        shape = null;
-                    }
-                }
-                else {
-                    // This is a real interface/type export
-                    shape = this.buildTypeApiShape(symbol, targetDecl, 'interface');
-                }
+                // Always build interface shape - don't try to treat as variable
+                shape = this.buildTypeApiShape(symbol, targetDecl, 'interface');
             }
             else if (tsApi.isTypeAliasDeclaration(targetDecl)) {
                 shape = this.buildTypeApiShape(symbol, targetDecl, 'type');
@@ -2816,6 +2816,18 @@ export class TypeScriptAnalyzer {
             else if (tsApi.isVariableDeclaration(targetDecl) ||
                 tsApi.isBindingElement(targetDecl)) {
                 shape = this.buildVariableApiShape(symbol, targetDecl);
+            }
+            else if (tsApi.isModuleDeclaration(targetDecl)) {
+                // Namespace/module export - build shape from TypeChecker
+                shape = this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity, targetDecl);
+            }
+            else if (targetDecl.kind === 268) {
+                // ImportEqualsDeclaration - build shape from TypeChecker
+                shape = this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity, targetDecl);
+            }
+            else if (targetDecl.kind === 308) {
+                // SourceFile - namespace/module export, build from TypeChecker
+                shape = this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity, targetDecl);
             }
             else {
                 // Fallback: try to infer from symbol flags
@@ -2859,18 +2871,33 @@ export class TypeScriptAnalyzer {
                     }
                 }
                 else if (flags & tsApi.SymbolFlags.Variable || flags & tsApi.SymbolFlags.Property) {
-                    const varDecl = declarations.find((d) => tsApi.isVariableDeclaration(d));
+                    const varDecl = declarations.find((d) => tsApi.isVariableDeclaration(d) || tsApi.isBindingElement(d));
                     if (varDecl) {
                         shape = this.buildVariableApiShape(symbol, varDecl);
                     }
                     else {
-                        // Try to build variable shape from the declaration we have
-                        shape = this.buildVariableApiShape(symbol, targetDecl);
+                        // Only try to build variable shape if targetDecl is actually a variable declaration
+                        // Don't call buildVariableApiShape with InterfaceDeclaration or other types
+                        if (tsApi.isVariableDeclaration(targetDecl) || tsApi.isBindingElement(targetDecl)) {
+                            shape = this.buildVariableApiShape(symbol, targetDecl);
+                        }
+                        else {
+                            // Can't build variable shape - try TypeChecker fallback
+                            shape = this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity, targetDecl);
+                        }
                     }
                 }
                 else {
-                    console.warn(`[TypeScriptAnalyzer] Unknown declaration kind ${targetDecl.kind} (${tsApi.SyntaxKind[targetDecl.kind]}) for ${resolved.exportName}, flags: ${flags}`);
+                    // Unknown declaration kind - try TypeChecker fallback before giving up
+                    shape = this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity, targetDecl);
+                    if (!shape) {
+                        console.warn(`[TypeScriptAnalyzer] Unknown declaration kind ${targetDecl.kind} (${tsApi.SyntaxKind[targetDecl.kind]}) for ${resolved.exportName}, flags: ${flags}`);
+                    }
                 }
+            }
+            // If shape building failed, try TypeChecker fallback
+            if (!shape && targetDecl) {
+                shape = this.buildShapeFromTypeChecker(symbol, resolved.exportName, identity, targetDecl);
             }
             // Cache result
             this.apiShapeCache.set(identity, shape);
@@ -2878,7 +2905,75 @@ export class TypeScriptAnalyzer {
         }
         catch (error) {
             console.warn(`[TypeScriptAnalyzer] Error building API shape for ${resolved.exportName}:`, error);
+            // Try TypeChecker fallback on error
+            try {
+                const fallbackShape = this.buildShapeFromTypeChecker(resolved.tsSymbol, resolved.exportName, identity);
+                if (fallbackShape) {
+                    this.apiShapeCache.set(identity, fallbackShape);
+                    return fallbackShape;
+                }
+            }
+            catch (fallbackError) {
+                // Ignore fallback errors
+            }
             this.apiShapeCache.set(identity, null);
+            return null;
+        }
+    }
+    /**
+     * Builds an API shape from TypeChecker when syntax-based building fails.
+     * This is useful for type-only exports, complex aliases, and edge cases.
+     */
+    buildShapeFromTypeChecker(symbol, exportName, identity, decl) {
+        if (!this.checker)
+            return null;
+        const tsApi = this.getTsApi();
+        try {
+            // Use provided declaration or get first available
+            const declarations = symbol.getDeclarations();
+            const targetDecl = decl || (declarations && declarations.length > 0 ? declarations[0] : null);
+            if (!targetDecl) {
+                return null;
+            }
+            // Get type from TypeChecker
+            const type = this.checker.getTypeOfSymbolAtLocation(symbol, targetDecl);
+            if (!type) {
+                return null;
+            }
+            // Convert type to string
+            const typeText = this.checker.typeToString(type, targetDecl, tsApi.TypeFormatFlags?.NoTruncation ?? undefined);
+            // Determine kind from symbol flags
+            const flags = symbol.getFlags();
+            let kind = 'type';
+            if (flags & tsApi.SymbolFlags.Variable || flags & tsApi.SymbolFlags.Property) {
+                kind = 'variable';
+            }
+            else if (flags & tsApi.SymbolFlags.Interface) {
+                kind = 'interface';
+            }
+            // Build appropriate shape
+            if (kind === 'variable') {
+                const isConst = !!(targetDecl.modifiers &&
+                    targetDecl.modifiers.some(m => m.kind === tsApi.SyntaxKind.ConstKeyword));
+                return {
+                    kind: isConst ? 'const' : 'variable',
+                    name: exportName,
+                    type: typeText,
+                    readonly: isConst
+                };
+            }
+            else {
+                return {
+                    kind: kind,
+                    name: exportName,
+                    typeText: typeText,
+                    properties: [],
+                    indexSignatures: []
+                };
+            }
+        }
+        catch (error) {
+            // Silently fail - return null to let caller handle
             return null;
         }
     }

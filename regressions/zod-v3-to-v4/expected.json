@@ -16,18 +16,18 @@
       "changed": 0
     },
     "apiDiff": {
-      "added": 8,
-      "removed": 3,
+      "added": 23,
+      "removed": 197,
       "modified": 0,
-      "renamed": 0
+      "renamed": 3
     }
   },
   "regressionChecks": {
     "removedExportsDetected": true,
-    "removedExportsCount": 3,
+    "removedExportsCount": 197,
     "modifiedExportsCount": 0,
-    "addedExportsCount": 8,
-    "renamedExportsCount": 0,
+    "addedExportsCount": 23,
+    "renamedExportsCount": 3,
     "hasBreakingChanges": true
   },
   "sampleSymbols": {
@@ -55,9 +55,121 @@
         "detailedShape": {
           "memberCount": 0
         }
+      },
+      {
+        "name": "makeIssue",
+        "kind": "interface",
+        "shapeName": "makeIssue",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseParams",
+        "kind": "type",
+        "shapeName": "ParseParams",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParsePathComponent",
+        "kind": "type",
+        "shapeName": "ParsePathComponent",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParsePath",
+        "kind": "type",
+        "shapeName": "ParsePath",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "EMPTY_PATH",
+        "kind": "interface",
+        "shapeName": "EMPTY_PATH",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseContext",
+        "kind": "interface",
+        "shapeName": "ParseContext",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseInput",
+        "kind": "type",
+        "shapeName": "ParseInput",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ObjectPair",
+        "kind": "type",
+        "shapeName": "ObjectPair",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseStatus",
+        "kind": "type",
+        "shapeName": "ParseStatus",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseResult",
+        "kind": "interface",
+        "shapeName": "ParseResult",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "SyncParseReturnType",
+        "kind": "type",
+        "shapeName": "SyncParseReturnType",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "AsyncParseReturnType",
+        "kind": "type",
+        "shapeName": "AsyncParseReturnType",
+        "detailedShape": {
+          "propertyCount": 0
+        }
       }
     ],
     "added": [
+      {
+        "name": "globalRegistry",
+        "kind": "interface",
+        "shapeName": "globalRegistry",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "GlobalMeta",
+        "kind": "interface",
+        "shapeName": "GlobalMeta",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
       {
         "name": "registry",
         "kind": "enum",
@@ -72,6 +184,30 @@
         "shapeName": "config",
         "detailedShape": {
           "memberCount": 0
+        }
+      },
+      {
+        "name": "$output",
+        "kind": "interface",
+        "shapeName": "$output",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "$input",
+        "kind": "interface",
+        "shapeName": "$input",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "$brand",
+        "kind": "interface",
+        "shapeName": "$brand",
+        "detailedShape": {
+          "propertyCount": 0
         }
       },
       {
@@ -121,12 +257,28 @@
         "detailedShape": {
           "memberCount": 0
         }
+      },
+      {
+        "name": "TimePrecision",
+        "kind": "interface",
+        "shapeName": "TimePrecision",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ZodISODateTime",
+        "kind": "variable",
+        "shapeName": "ZodISODateTime",
+        "detailedShape": {
+          "type": "any"
+        }
       }
     ]
   },
   "assertions": {
-    "minShapesBuilt": 6,
-    "maxShapesBuilt": 10,
+    "minShapesBuilt": 20,
+    "maxShapesBuilt": 32,
     "mustHaveRemovedExports": true,
     "mustHaveAddedExports": true
   }
