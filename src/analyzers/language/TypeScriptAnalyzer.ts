@@ -2954,6 +2954,7 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         
         let successCount = 0;
         let failureCount = 0;
+        const failedShapeNames: string[] = [];
         
         for (const resolved of resolvedExports) {
             try {
@@ -3002,6 +3003,7 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                     if (!resolved.tsSymbol) {
                         console.warn(`[TypeScriptAnalyzer] No tsSymbol for export ${resolved.exportName} at ${resolved.declFilePath}:${resolved.declPos}`);
                         failureCount++;
+                        failedShapeNames.push(resolved.exportName);
                         continue;
                     }
                 }
@@ -3036,21 +3038,30 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                         // Only log as failure if it's not a known skip case
                         console.warn(`[TypeScriptAnalyzer] Failed to build API shape for ${resolved.exportName} (kind: ${resolved.kind})`);
                         failureCount++;
+                        failedShapeNames.push(resolved.exportName);
                     }
                     // Otherwise, it's a type-only export or variable with interface - skip silently
                 }
             } catch (error) {
                 console.warn(`[TypeScriptAnalyzer] Error building API shape for ${resolved.exportName}:`, error);
                 failureCount++;
+                failedShapeNames.push(resolved.exportName);
             }
         }
         
         console.log(`[TypeScriptAnalyzer] API snapshot: ${successCount} shapes built, ${failureCount} failed`);
         
+        if (failureCount > 0) {
+            console.warn(`[TypeScriptAnalyzer] ⚠️  WARNING: ${failureCount} API shapes failed to build: ${failedShapeNames.slice(0, 10).join(', ')}${failedShapeNames.length > 10 ? '...' : ''}`);
+        }
+        
         return {
             entrypointPath,
             exports,
-            timestamp: new Date()
+            timestamp: new Date(),
+            failedShapes: failureCount,
+            failedShapeNames: failedShapeNames.length > 0 ? failedShapeNames : undefined,
+            partial: failureCount > 0
         };
     }
 
@@ -3059,6 +3070,17 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
      */
     private createExportIdentity(resolved: ResolvedExport): ExportIdentity {
         return `${resolved.exportName}|${resolved.isTypeOnly ? 'type' : 'value'}|${resolved.declFilePath}|${resolved.declPos}`;
+    }
+
+    /**
+     * Checks if a symbol has any type-only declarations (interface or type alias).
+     * This is important because symbols with type-only declarations should use
+     * getDeclaredTypeOfSymbol instead of getTypeOfSymbolAtLocation.
+     */
+    private symbolHasTypeOnlyDecl(symbol: ts.Symbol): boolean {
+        const tsApi = this.getTsApi();
+        const decls = symbol.getDeclarations() ?? [];
+        return decls.some(d => tsApi.isInterfaceDeclaration(d) || tsApi.isTypeAliasDeclaration(d));
     }
 
     /**
@@ -3264,7 +3286,34 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             }
             
             // Get type from TypeChecker
-            const type = this.checker.getTypeOfSymbolAtLocation(symbol, targetDecl);
+            // Use appropriate method based on declaration kind to avoid errors
+            let type: ts.Type;
+            try {
+                if (tsApi.isInterfaceDeclaration(targetDecl)) {
+                    // For interfaces, use getDeclaredTypeOfSymbol
+                    type = this.checker.getDeclaredTypeOfSymbol(symbol);
+                    if (!type || (type.flags & tsApi.TypeFlags.Undefined)) {
+                        type = this.checker.getTypeAtLocation(targetDecl);
+                    }
+                } else if (tsApi.isTypeAliasDeclaration(targetDecl) && targetDecl.type) {
+                    // For type aliases, get type from the type node
+                    type = this.checker.getTypeFromTypeNode(targetDecl.type);
+                } else {
+                    // For variables and other declarations, use getTypeOfSymbolAtLocation
+                    type = this.checker.getTypeOfSymbolAtLocation(symbol, targetDecl);
+                }
+            } catch (error) {
+                // Fallback: try getDeclaredTypeOfSymbol
+                try {
+                    type = this.checker.getDeclaredTypeOfSymbol(symbol);
+                    if (!type) {
+                        return null;
+                    }
+                } catch (fallbackError) {
+                    return null;
+                }
+            }
+            
             if (!type) {
                 return null;
             }
@@ -3554,31 +3603,36 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         
         const name = symbol.getName();
         
-        // For interface declarations, we can't use getTypeOfSymbolAtLocation if the symbol flags
-        // indicate it's a variable (this causes the "Unhandled declaration kind" error)
-        // Instead, get the type from the type node directly
+        // Check if symbol has type-only declarations - if so, never use getTypeOfSymbolAtLocation
+        // This prevents crashes when symbols have value-like flags but only type declarations
+        const hasTypeOnly = this.symbolHasTypeOnlyDecl(symbol);
+        
         let type: ts.Type;
         try {
-            if (tsApi.isInterfaceDeclaration(decl) && (symbol.getFlags() & (tsApi.SymbolFlags.Variable | tsApi.SymbolFlags.Property))) {
-                // This is a variable with an interface type - get type from the type checker differently
-                // Try to get the type from a variable declaration if available
-                const varDecl = symbol.getDeclarations()?.find(d => tsApi.isVariableDeclaration(d));
-                if (varDecl && tsApi.isVariableDeclaration(varDecl) && varDecl.type) {
-                    type = this.checker.getTypeFromTypeNode(varDecl.type);
-                } else {
-                    // Fallback: try to get type from the symbol at a different location
-                    const sourceFile = decl.getSourceFile();
-                    type = this.checker.getTypeOfSymbolAtLocation(symbol, sourceFile);
+            if (hasTypeOnly || tsApi.isInterfaceDeclaration(decl) || tsApi.isTypeAliasDeclaration(decl)) {
+                // Always prefer declared type for symbols that are (or behave like) types
+                type = this.checker.getDeclaredTypeOfSymbol(symbol);
+
+                // If it's a type alias and we have a type node, that is often more precise
+                if (tsApi.isTypeAliasDeclaration(decl) && decl.type) {
+                    type = this.checker.getTypeFromTypeNode(decl.type);
+                }
+
+                if (!type || (type.flags & tsApi.TypeFlags.Undefined)) {
+                    type = this.checker.getTypeAtLocation(decl);
                 }
             } else {
+                // Only for real value declarations
                 type = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
             }
         } catch (e) {
-            // If getTypeOfSymbolAtLocation fails, try alternative approach
+            // If the primary approach fails, try alternative methods
             console.warn(`[TypeScriptAnalyzer] Error getting type for ${name}, trying alternative:`, e);
             try {
-                const sourceFile = decl.getSourceFile();
-                type = this.checker.getTypeOfSymbolAtLocation(symbol, sourceFile);
+                type = this.checker.getDeclaredTypeOfSymbol(symbol);
+                if (!type || (type.flags & tsApi.TypeFlags.Undefined)) {
+                    type = this.checker.getTypeAtLocation(decl);
+                }
             } catch (e2) {
                 console.warn(`[TypeScriptAnalyzer] Failed to get type for ${name}:`, e2);
                 return null;
@@ -3631,8 +3685,10 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             // Get properties for object types
             const props = type.getProperties();
             for (const prop of props) {
-                const propType = this.checker.getTypeOfSymbolAtLocation(prop, decl);
                 const propDecl = prop.getDeclarations()?.[0];
+                // Use the property's own declaration location if available, otherwise fall back to the parent decl
+                const loc = propDecl ?? decl;
+                const propType = this.checker.getTypeOfSymbolAtLocation(prop, loc);
                 
                 properties.push({
                     name: prop.getName(),

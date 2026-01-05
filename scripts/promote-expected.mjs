@@ -185,6 +185,16 @@ async function main() {
         return symbol;
       }),
     },
+    failedShapes: actual.failedShapes ? {
+      maxAllowed: Math.max(10, Math.floor((actual.failedShapes.total || 0) * 1.5)), // Allow 50% growth
+      stableList: [
+        ...(actual.failedShapes.beforeNames || []),
+        ...(actual.failedShapes.afterNames || [])
+      ].filter((v, i, a) => a.indexOf(v) === i).sort(), // Unique and sorted
+    } : undefined,
+    confidence: actual.confidence ? {
+      min: Math.max(0.7, (actual.confidence * 0.95)), // Allow 5% degradation
+    } : undefined,
     assertions: {
       minShapesBuilt: Math.floor(
         (Object.keys(actual.apiSnapshotAfter?.exports || {}).length * 0.8)
@@ -194,6 +204,7 @@ async function main() {
       ),
       mustHaveRemovedExports: (actual.apiDiff?.removed?.length || 0) > 0,
       mustHaveAddedExports: (actual.apiDiff?.added?.length || 0) > 0,
+      maxFailedShapes: actual.failedShapes?.total ? Math.ceil((actual.failedShapes.total || 0) * 1.5) : 10,
     },
   };
 

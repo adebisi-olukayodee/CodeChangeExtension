@@ -413,7 +413,55 @@ async function main() {
         const apiSnapshotAfter = await buildApiSnapshot({ repoRoot: repoDir, paths: afterExisting.length > 0 ? afterExisting : r.paths, tsconfig: r.tsconfig });
         
         if (apiSnapshotBefore && apiSnapshotAfter) {
-          const apiDiff = computeApiDiff(apiSnapshotBefore, apiSnapshotAfter);
+          // Track failed shapes for graceful degradation
+          const failedBefore = apiSnapshotBefore.failedShapes || 0;
+          const failedAfter = apiSnapshotAfter.failedShapes || 0;
+          const failedNamesBefore = new Set(apiSnapshotBefore.failedShapeNames || []);
+          const failedNamesAfter = new Set(apiSnapshotAfter.failedShapeNames || []);
+          const totalFailed = failedBefore + failedAfter;
+          const isPartial = totalFailed > 0;
+          
+          if (isPartial) {
+            console.warn(`\n[regression] ⚠️  ${r.id}: ${totalFailed} API shapes failed to build (Before: ${failedBefore}, After: ${failedAfter})`);
+            console.warn(`[regression]    Failed symbols will be excluded from API diff`);
+            if (failedBefore > 0) {
+              console.warn(`[regression]    Before failed: ${(apiSnapshotBefore.failedShapeNames || []).slice(0, 5).join(', ')}${failedBefore > 5 ? '...' : ''}`);
+            }
+            if (failedAfter > 0) {
+              console.warn(`[regression]    After failed: ${(apiSnapshotAfter.failedShapeNames || []).slice(0, 5).join(', ')}${failedAfter > 5 ? '...' : ''}`);
+            }
+          }
+          
+          // Filter out failed symbols from API snapshots before computing diff
+          const beforeExportsFiltered = new Map();
+          const afterExportsFiltered = new Map();
+          
+          for (const [identity, shape] of apiSnapshotBefore.exports) {
+            // Extract export name from identity (format: "name|type|path|pos")
+            const exportName = identity.split('|')[0];
+            if (!failedNamesBefore.has(exportName)) {
+              beforeExportsFiltered.set(identity, shape);
+            }
+          }
+          
+          for (const [identity, shape] of apiSnapshotAfter.exports) {
+            const exportName = identity.split('|')[0];
+            if (!failedNamesAfter.has(exportName)) {
+              afterExportsFiltered.set(identity, shape);
+            }
+          }
+          
+          // Create filtered snapshots for diff computation
+          const beforeFiltered = {
+            ...apiSnapshotBefore,
+            exports: beforeExportsFiltered
+          };
+          const afterFiltered = {
+            ...apiSnapshotAfter,
+            exports: afterExportsFiltered
+          };
+          
+          const apiDiff = computeApiDiff(beforeFiltered, afterFiltered);
           console.log(`[regression] ${r.id} API diff: +${apiDiff.added.length} -${apiDiff.removed.length} ~${apiDiff.modified.length} renamed:${apiDiff.renamed.length}`);
           
           // Regression checks for API snapshot mode
@@ -447,15 +495,27 @@ async function main() {
           // Convert API diff to breaking change findings
           const apiFindings = apiDiffToFindings(apiDiff, r.paths[0] || 'unknown');
           
+          // Calculate confidence (lower if partial)
+          const totalShapes = (apiSnapshotBefore.failedShapes || 0) + (apiSnapshotAfter.failedShapes || 0) + 
+                             beforeExportsFiltered.size + afterExportsFiltered.size;
+          const successShapes = beforeExportsFiltered.size + afterExportsFiltered.size;
+          const confidence = totalShapes > 0 ? (successShapes / totalShapes) : 1.0;
+          
           // Convert Maps to objects for JSON serialization
           const apiSnapshotBeforeSerialized = apiSnapshotBefore ? {
             ...apiSnapshotBefore,
-            exports: Object.fromEntries(apiSnapshotBefore.exports)
+            exports: Object.fromEntries(beforeExportsFiltered),
+            failedShapes: apiSnapshotBefore.failedShapes || 0,
+            failedShapeNames: apiSnapshotBefore.failedShapeNames || [],
+            partial: apiSnapshotBefore.partial || false
           } : null;
           
           const apiSnapshotAfterSerialized = apiSnapshotAfter ? {
             ...apiSnapshotAfter,
-            exports: Object.fromEntries(apiSnapshotAfter.exports)
+            exports: Object.fromEntries(afterExportsFiltered),
+            failedShapes: apiSnapshotAfter.failedShapes || 0,
+            failedShapeNames: apiSnapshotAfter.failedShapeNames || [],
+            partial: apiSnapshotAfter.partial || false
           } : null;
           
           result = { 
@@ -464,7 +524,16 @@ async function main() {
             apiSnapshotBefore: apiSnapshotBeforeSerialized, 
             apiSnapshotAfter: apiSnapshotAfterSerialized,
             regressionChecks,
-            apiFindings
+            apiFindings,
+            partial: isPartial,
+            confidence: isPartial ? confidence : 1.0,
+            failedShapes: {
+              before: failedBefore,
+              after: failedAfter,
+              total: totalFailed,
+              beforeNames: apiSnapshotBefore.failedShapeNames || [],
+              afterNames: apiSnapshotAfter.failedShapeNames || []
+            }
           };
         }
       }
@@ -476,7 +545,13 @@ async function main() {
         path.join(OUT_DIR, `${r.id}.actual.json`),
         JSON.stringify(normalizedResult, null, 2)
       );
-      console.log(`[regression] DONE  ${r.id}`);
+      // Log summary with failed shapes prominently if present
+      if (result.failedShapes && result.failedShapes.total > 0) {
+        const conf = result.confidence ? ` (confidence: ${(result.confidence * 100).toFixed(1)}%)` : '';
+        console.log(`[regression] DONE  ${r.id} ⚠️  ${result.failedShapes.total} failed shapes${conf}`);
+      } else {
+        console.log(`[regression] DONE  ${r.id}`);
+      }
     } catch (e) {
       console.error(`[regression] FAIL  ${r.id}`);
       console.error(e?.stack || e);

@@ -449,7 +449,54 @@ async function main() {
     }
   }
 
-  // 5. Verify assertions
+  // 5. Verify failed shapes (threshold and stability)
+  if (actual.failedShapes) {
+    const failedShapes = actual.failedShapes;
+    const totalFailed = failedShapes.total || 0;
+    const expectedFailed = expected.failedShapes || {};
+    
+    // Check threshold (max allowed failures)
+    const maxAllowedFailures = expectedFailed.maxAllowed || (expected.assertions?.maxFailedShapes ?? 10);
+    if (totalFailed > maxAllowedFailures) {
+      failures.push(
+        `Failed shapes (${totalFailed}) exceed maximum allowed (${maxAllowedFailures})`
+      );
+    }
+    
+    // Check stability (failure list should match expected)
+    if (expectedFailed.stableList && Array.isArray(expectedFailed.stableList)) {
+      const actualFailedNames = [
+        ...(failedShapes.beforeNames || []),
+        ...(failedShapes.afterNames || [])
+      ].sort();
+      const expectedFailedNames = [...expectedFailed.stableList].sort();
+      
+      if (JSON.stringify(actualFailedNames) !== JSON.stringify(expectedFailedNames)) {
+        failures.push(
+          `Failed shapes list changed. Expected: ${expectedFailedNames.join(', ')}, Got: ${actualFailedNames.join(', ')}`
+        );
+      }
+    }
+    
+    // Log failed shapes prominently
+    if (totalFailed > 0) {
+      console.log(`\n[test] ⚠️  Failed shapes: ${totalFailed} total`);
+      console.log(`[test]    Before: ${failedShapes.before || 0} - ${(failedShapes.beforeNames || []).slice(0, 5).join(', ')}${(failedShapes.beforeNames || []).length > 5 ? '...' : ''}`);
+      console.log(`[test]    After: ${failedShapes.after || 0} - ${(failedShapes.afterNames || []).slice(0, 5).join(', ')}${(failedShapes.afterNames || []).length > 5 ? '...' : ''}`);
+    }
+  }
+
+  // 6. Verify confidence
+  if (actual.confidence !== undefined && expected.confidence) {
+    const minConfidence = expected.confidence.min || 0.8;
+    if (actual.confidence < minConfidence) {
+      failures.push(
+        `Confidence (${(actual.confidence * 100).toFixed(1)}%) below minimum (${(minConfidence * 100).toFixed(1)}%)`
+      );
+    }
+  }
+
+  // 7. Verify assertions
   if (expected.assertions) {
     const assertions = expected.assertions;
     

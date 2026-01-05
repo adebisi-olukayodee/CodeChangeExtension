@@ -150,6 +150,12 @@ export interface ApiSnapshot {
     exports: Map<ExportIdentity, ApiShape>;
     /** Timestamp */
     timestamp: Date;
+    /** Number of shapes that failed to build */
+    failedShapes?: number;
+    /** List of export names/identities that failed to build */
+    failedShapeNames?: string[];
+    /** Whether this snapshot is partial (has failures) */
+    partial?: boolean;
 }
 
 /**

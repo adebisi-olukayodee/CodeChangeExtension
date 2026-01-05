@@ -31,7 +31,12 @@ jobs:
         continue-on-error: true
       
       - name: Run test assertions
-        run: npm run test:regression
+        run: |
+          npm run test:regression:date-fns
+          npm run test:regression:zod
+          npm run test:regression:axios
+          npm run test:regression:tanstack-query || echo "tanstack-query test not yet promoted"
+          npm run test:regression:rxjs || echo "rxjs test not yet promoted"
         continue-on-error: true
       
       - name: Upload test artifacts

@@ -34,8 +34,31 @@
         "index.d.ts"
       ],
       "tsconfig": "tsconfig.json",
-      "description": "Default export + named exports, class-based",
-      "skip": true
+      "description": "Default export + named exports, class-based"
+    },
+    {
+      "id": "tanstack-query-v4-to-v5",
+      "url": "https://github.com/TanStack/query.git",
+      "beforeRef": "v4.36.1",
+      "afterRef": "v5.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "packages/query-core/src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Heavy generic/signature changes"
+    },
+    {
+      "id": "rxjs-v6-to-v7",
+      "url": "https://github.com/ReactiveX/rxjs.git",
+      "beforeRef": "6.6.7",
+      "afterRef": "7.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Many changed-in-place APIs"
     },
     {
       "id": "lodash-es-4.17-to-4.18",

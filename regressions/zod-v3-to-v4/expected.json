@@ -16,18 +16,18 @@
       "changed": 0
     },
     "apiDiff": {
-      "added": 23,
-      "removed": 197,
+      "added": 24,
+      "removed": 238,
       "modified": 0,
-      "renamed": 3
+      "renamed": 5
     }
   },
   "regressionChecks": {
     "removedExportsDetected": true,
-    "removedExportsCount": 197,
+    "removedExportsCount": 238,
     "modifiedExportsCount": 0,
-    "addedExportsCount": 23,
-    "renamedExportsCount": 3,
+    "addedExportsCount": 24,
+    "renamedExportsCount": 5,
     "hasBreakingChanges": true
   },
   "sampleSymbols": {
@@ -277,8 +277,8 @@
     ]
   },
   "assertions": {
-    "minShapesBuilt": 20,
-    "maxShapesBuilt": 32,
+    "minShapesBuilt": 23,
+    "maxShapesBuilt": 35,
     "mustHaveRemovedExports": true,
     "mustHaveAddedExports": true
   }

@@ -1,0 +1,277 @@
+{
+  "metadata": {
+    "beforeSha": "4c69fed2a214dedcea73ffd2757a466bebaaed14",
+    "afterSha": "1bc56f876a61b73ac19e90acd51062f26b555fda",
+    "testName": "tanstack-query-v4-to-v5",
+    "description": "tanstack-query-v4-to-v5 regression test",
+    "pinnedRefs": {
+      "before": "4c69fed",
+      "after": "1bc56f8"
+    }
+  },
+  "counts": {
+    "exportsDiff": {
+      "added": 15,
+      "removed": 12,
+      "changed": 0
+    },
+    "apiDiff": {
+      "added": 17,
+      "removed": 13,
+      "modified": 0,
+      "renamed": 79
+    }
+  },
+  "regressionChecks": {
+    "removedExportsDetected": true,
+    "removedExportsCount": 13,
+    "modifiedExportsCount": 0,
+    "addedExportsCount": 17,
+    "renamedExportsCount": 79,
+    "hasBreakingChanges": true
+  },
+  "sampleSymbols": {
+    "removed": [
+      {
+        "name": "hashQueryKey",
+        "kind": "enum",
+        "shapeName": "hashQueryKey",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "isError",
+        "kind": "enum",
+        "shapeName": "isError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "parseQueryArgs",
+        "kind": "enum",
+        "shapeName": "parseQueryArgs",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "parseFilterArgs",
+        "kind": "enum",
+        "shapeName": "parseFilterArgs",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "parseMutationFilterArgs",
+        "kind": "enum",
+        "shapeName": "parseMutationFilterArgs",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "parseMutationArgs",
+        "kind": "enum",
+        "shapeName": "parseMutationArgs",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "QueryFunctionContext",
+        "kind": "interface",
+        "shapeName": "QueryFunctionContext",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "QueryMeta",
+        "kind": "interface",
+        "shapeName": "QueryMeta",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "UseErrorBoundary",
+        "kind": "type",
+        "shapeName": "UseErrorBoundary",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "FetchInfiniteQueryOptions",
+        "kind": "interface",
+        "shapeName": "FetchInfiniteQueryOptions",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "RefetchPageFilters",
+        "kind": "interface",
+        "shapeName": "RefetchPageFilters",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ResetQueryFilters",
+        "kind": "interface",
+        "shapeName": "ResetQueryFilters",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "MutationMeta",
+        "kind": "interface",
+        "shapeName": "MutationMeta",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      }
+    ],
+    "added": [
+      {
+        "name": "hashKey",
+        "kind": "enum",
+        "shapeName": "hashKey",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "keepPreviousData",
+        "kind": "enum",
+        "shapeName": "keepPreviousData",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "NoInfer",
+        "kind": "type",
+        "shapeName": "NoInfer",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "Register",
+        "kind": "interface",
+        "shapeName": "Register",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "DefaultError",
+        "kind": "type",
+        "shapeName": "DefaultError",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "dataTagSymbol",
+        "kind": "interface",
+        "shapeName": "dataTagSymbol",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "DataTag",
+        "kind": "type",
+        "shapeName": "DataTag",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "QueryPersister",
+        "kind": "type",
+        "shapeName": "QueryPersister",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "QueryFunctionContext",
+        "kind": "type",
+        "shapeName": "QueryFunctionContext",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "QueriesPlaceholderDataFunction",
+        "kind": "type",
+        "shapeName": "QueriesPlaceholderDataFunction",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "QueryMeta",
+        "kind": "type",
+        "shapeName": "QueryMeta",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "InitialPageParam",
+        "kind": "interface",
+        "shapeName": "InitialPageParam",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "InfiniteQueryPageParamsOptions",
+        "kind": "interface",
+        "shapeName": "InfiniteQueryPageParamsOptions",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ThrowOnError",
+        "kind": "type",
+        "shapeName": "ThrowOnError",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "FetchInfiniteQueryOptions",
+        "kind": "type",
+        "shapeName": "FetchInfiniteQueryOptions",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      }
+    ]
+  },
+  "failedShapes": {
+    "maxAllowed": 10,
+    "stableList": []
+  },
+  "confidence": {
+    "min": 0.95
+  },
+  "assertions": {
+    "minShapesBuilt": 76,
+    "maxShapesBuilt": 116,
+    "mustHaveRemovedExports": true,
+    "mustHaveAddedExports": true,
+    "maxFailedShapes": 10
+  }
+}
