@@ -944,11 +944,14 @@ class SimpleImpactViewProvider {
             : [];
         // Downstream components that depend on changed code
         if (uniqueDownstream.length > 0) {
+            const changedFilePath = result.filePath;
             for (const component of uniqueDownstream) {
+                // Find the import line in the downstream file that imports from the changed file
+                const importLine = this.findImportLine(component, changedFilePath);
                 breakingIssues.push({
                     severity: '⚠️ Risk',
                     message: `Depends on changed code: ${require('path').basename(component)}`,
-                    line: 0,
+                    line: importLine,
                     category: 'Downstream Impact',
                     file: component,
                     recommendedFixes: [
@@ -980,44 +983,105 @@ class SimpleImpactViewProvider {
                 });
             }
         }
-        // Changed functions/classes that other code depends on
-        if (uniqueChangedFunctions.length > 0) {
-            for (const func of uniqueChangedFunctions) {
-                // Only show if there are downstream components (indicating other code depends on it)
-                if (uniqueDownstream.length > 0) {
+        // API Breaking Changes - These are about the public contract changing, 
+        // NOT about whether we found downstream dependencies in this workspace.
+        // A breaking change exists if the API surface became stricter/incompatible,
+        // regardless of whether this workspace contains callers.
+        const isHighRiskBreakingChange = result.riskLevel === 'high';
+        // Always show breaking changes if API contract changed (riskLevel === 'high')
+        // This is independent of whether we found downstream dependencies
+        if (isHighRiskBreakingChange) {
+            // Show breaking changes for changed functions (API signature changes)
+            if (uniqueChangedFunctions.length > 0) {
+                for (const func of uniqueChangedFunctions) {
                     breakingIssues.push({
-                        severity: '⚠️ Breaking Change',
-                        message: `Function changed: ${func} (may break callers)`,
+                        severity: '🚨 Breaking Change',
+                        message: `API breaking change: ${func} (signature/parameter change detected)`,
                         line: 0,
-                        category: 'Function Impact',
+                        category: 'API Breaking Change',
                         file: result.filePath,
                         recommendedFixes: [
-                            `Find all call sites of ${func}() and update them`,
-                            'Maintain backward compatibility by adding overloads',
-                            'Add parameter defaults if possible',
-                            'Update function signature documentation',
-                            'Run tests for all callers to verify compatibility'
+                            `Breaking change: ${func} signature became stricter/incompatible`,
+                            'This may break existing callers (even if none found in this workspace)',
+                            'Review all call sites and update them before deploying',
+                            'Consider maintaining backward compatibility with overloads or defaults',
+                            'Document breaking change in CHANGELOG',
+                            'Consider version bump if breaking change is necessary'
                         ]
                     });
                 }
             }
-        }
-        if (uniqueChangedClasses.length > 0) {
-            for (const cls of uniqueChangedClasses) {
-                // Only show if there are downstream components (indicating other code depends on it)
-                if (uniqueDownstream.length > 0) {
+            // Show breaking changes for changed classes (API contract changes)
+            if (uniqueChangedClasses.length > 0) {
+                for (const cls of uniqueChangedClasses) {
                     breakingIssues.push({
-                        severity: '⚠️ Breaking Change',
-                        message: `Class changed: ${cls} (may break dependents)`,
+                        severity: '🚨 Breaking Change',
+                        message: `API breaking change: ${cls} (contract changed)`,
+                        line: 0,
+                        category: 'API Breaking Change',
+                        file: result.filePath,
+                        recommendedFixes: [
+                            `Breaking change: ${cls} contract became stricter/incompatible`,
+                            'This may break existing code (even if none found in this workspace)',
+                            'Review all usages and update them before deploying',
+                            'Consider maintaining backward compatibility',
+                            'Document breaking change in CHANGELOG',
+                            'Consider version bump if breaking change is necessary'
+                        ]
+                    });
+                }
+            }
+            // Fallback: If risk is HIGH but no specific functions/classes captured, 
+            // still show a breaking change warning
+            if (uniqueChangedFunctions.length === 0 && uniqueChangedClasses.length === 0) {
+                breakingIssues.push({
+                    severity: '🚨 Breaking Change',
+                    message: `API breaking change detected in ${result.filePath}`,
+                    line: 0,
+                    category: 'API Breaking Change',
+                    file: result.filePath,
+                    recommendedFixes: [
+                        'Breaking API change detected (signature/contract became stricter)',
+                        'This may break existing callers (even if none found in this workspace)',
+                        'Review changes for backward compatibility',
+                        'Update all call sites before deploying',
+                        'Document breaking changes in CHANGELOG',
+                        'Consider version bump if breaking change is necessary'
+                    ]
+                });
+            }
+        }
+        else {
+            // Non-breaking changes: Only show if there are downstream dependencies
+            // These are "impact" warnings, not breaking API changes
+            if (uniqueChangedFunctions.length > 0 && uniqueDownstream.length > 0) {
+                for (const func of uniqueChangedFunctions) {
+                    breakingIssues.push({
+                        severity: '⚠️ Risk',
+                        message: `Function changed: ${func} (may affect downstream code)`,
+                        line: 0,
+                        category: 'Function Impact',
+                        file: result.filePath,
+                        recommendedFixes: [
+                            `Review call sites of ${func}() to ensure compatibility`,
+                            'Run tests for dependent components',
+                            'Check for compilation/runtime errors in dependent files'
+                        ]
+                    });
+                }
+            }
+            if (uniqueChangedClasses.length > 0 && uniqueDownstream.length > 0) {
+                for (const cls of uniqueChangedClasses) {
+                    breakingIssues.push({
+                        severity: '⚠️ Risk',
+                        message: `Class changed: ${cls} (may affect dependent code)`,
                         line: 0,
                         category: 'Class Impact',
                         file: result.filePath,
                         recommendedFixes: [
-                            `Find all usages of ${cls} class and verify compatibility`,
-                            'Maintain backward compatibility by preserving existing methods/properties',
-                            'Add deprecation warnings before removing features',
-                            'Update class documentation with migration guide',
-                            'Run tests for all dependent classes'
+                            `Review usages of ${cls} class to ensure compatibility`,
+                            'Run tests for dependent components',
+                            'Check for compilation/runtime errors in dependent files'
                         ]
                     });
                 }
@@ -1773,6 +1837,71 @@ class SimpleImpactViewProvider {
             this.testResults.set(result.testFile, result);
         }
         this.refresh();
+    }
+    /**
+     * Find the line number of the import statement in a downstream file that imports from the changed file
+     * Returns 0 if no import is found
+     */
+    findImportLine(downstreamFile, changedFile) {
+        try {
+            // Resolve paths to absolute if they're relative
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            const workspaceRoot = workspaceFolders && workspaceFolders.length > 0
+                ? workspaceFolders[0].uri.fsPath
+                : process.cwd();
+            const resolvedDownstreamFile = path.isAbsolute(downstreamFile)
+                ? downstreamFile
+                : path.resolve(workspaceRoot, downstreamFile);
+            const resolvedChangedFile = path.isAbsolute(changedFile)
+                ? changedFile
+                : path.resolve(workspaceRoot, changedFile);
+            if (!fs.existsSync(resolvedDownstreamFile)) {
+                return 0;
+            }
+            const content = fs.readFileSync(resolvedDownstreamFile, 'utf8');
+            const lines = content.split('\n');
+            // Calculate relative path from downstream file to changed file
+            const downstreamDir = path.dirname(resolvedDownstreamFile);
+            const changedDir = path.dirname(resolvedChangedFile);
+            const changedFileName = path.basename(resolvedChangedFile, path.extname(resolvedChangedFile));
+            // Try multiple relative path formats
+            const relativePath = path.relative(downstreamDir, resolvedChangedFile).replace(/\\/g, '/');
+            const relativePathWithoutExt = relativePath.replace(/\.(ts|tsx|js|jsx)$/, '');
+            // Also try directory-relative import (e.g., './utils' if changedFile is './utils/index.ts')
+            const relativeDir = path.relative(downstreamDir, changedDir).replace(/\\/g, '/');
+            const relativeDirWithFileName = relativeDir ? `${relativeDir}/${changedFileName}` : changedFileName;
+            // Patterns to match:
+            // - import ... from './relative/path'
+            // - import ... from '../relative/path'
+            // - import('...') or require('...')
+            const importPatterns = [
+                new RegExp(`from\\s+['"]${this.escapeRegex(relativePathWithoutExt)}['"]`),
+                new RegExp(`from\\s+['"]${this.escapeRegex(relativePath)}['"]`),
+                new RegExp(`from\\s+['"]${this.escapeRegex(relativeDirWithFileName)}['"]`),
+                new RegExp(`import\\s*\\(\\s*['"]${this.escapeRegex(relativePathWithoutExt)}['"]`),
+                new RegExp(`require\\s*\\(\\s*['"]${this.escapeRegex(relativePathWithoutExt)}['"]`),
+            ];
+            // Find the first matching import line
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                for (const pattern of importPatterns) {
+                    if (pattern.test(line)) {
+                        return i + 1; // Line numbers are 1-based
+                    }
+                }
+            }
+        }
+        catch (error) {
+            // If there's an error, just return 0 (will open file without line navigation)
+            console.warn(`[SimpleImpactViewProvider] Error finding import line in ${downstreamFile}:`, error);
+        }
+        return 0;
+    }
+    /**
+     * Escape special regex characters in a string
+     */
+    escapeRegex(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 }
 exports.SimpleImpactViewProvider = SimpleImpactViewProvider;

@@ -111,5 +111,28 @@ export interface ILanguageAnalyzer {
         changedFunctions: string[];
         changedClasses: string[];
     }>;
+
+    /**
+     * Build a snapshot of the code state (AST + symbols + exports).
+     * This is an immutable representation that can be cached and compared.
+     * @param filePath Path to the file
+     * @param content File content
+     * @returns Symbol snapshot
+     */
+    buildSnapshot?(
+        filePath: string,
+        content: string
+    ): Promise<import('./language/SymbolSnapshot').SymbolSnapshot>;
+
+    /**
+     * Diff two snapshots to find changes.
+     * @param beforeSnapshot Snapshot before changes
+     * @param afterSnapshot Snapshot after changes
+     * @returns Diff result with changed symbols
+     */
+    diffSnapshots?(
+        beforeSnapshot: import('./language/SymbolSnapshot').SymbolSnapshot,
+        afterSnapshot: import('./language/SymbolSnapshot').SymbolSnapshot
+    ): Promise<import('./language/SymbolSnapshot').SnapshotDiff>;
 }
 

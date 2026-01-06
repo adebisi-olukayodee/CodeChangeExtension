@@ -1,0 +1,189 @@
+{
+  "metadata": {
+    "beforeSha": "beeeb7bdc3b09524bdd6c59ff40ed80ac932076a",
+    "afterSha": "f9a60f098f3846ca16178a2447e638edeb234ccc",
+    "testName": "rxjs-v6-to-v7",
+    "description": "rxjs-v6-to-v7 regression test",
+    "pinnedRefs": {
+      "before": "beeeb7b",
+      "after": "f9a60f0"
+    }
+  },
+  "counts": {
+    "exportsDiff": {
+      "added": 24,
+      "removed": 0,
+      "changed": 0
+    },
+    "apiDiff": {
+      "added": 26,
+      "removed": 2,
+      "modified": 0,
+      "renamed": 78
+    }
+  },
+  "regressionChecks": {
+    "removedExportsDetected": true,
+    "removedExportsCount": 2,
+    "modifiedExportsCount": 0,
+    "addedExportsCount": 26,
+    "renamedExportsCount": 78,
+    "hasBreakingChanges": true
+  },
+  "sampleSymbols": {
+    "removed": [
+      {
+        "name": "GroupedObservable",
+        "kind": "type",
+        "shapeName": "GroupedObservable",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "InteropObservable",
+        "kind": "type",
+        "shapeName": "InteropObservable",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      }
+    ],
+    "added": [
+      {
+        "name": "GroupedObservable",
+        "kind": "interface",
+        "shapeName": "GroupedObservable",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "animationFrames",
+        "kind": "enum",
+        "shapeName": "animationFrames",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "lastValueFrom",
+        "kind": "enum",
+        "shapeName": "lastValueFrom",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "firstValueFrom",
+        "kind": "enum",
+        "shapeName": "firstValueFrom",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "NotFoundError",
+        "kind": "variable",
+        "shapeName": "NotFoundError",
+        "detailedShape": {
+          "type": "NotFoundError"
+        }
+      },
+      {
+        "name": "SequenceError",
+        "kind": "variable",
+        "shapeName": "SequenceError",
+        "detailedShape": {
+          "type": "SequenceError"
+        }
+      },
+      {
+        "name": "connectable",
+        "kind": "enum",
+        "shapeName": "connectable",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "InteropObservable",
+        "kind": "interface",
+        "shapeName": "InteropObservable",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "NextNotification",
+        "kind": "interface",
+        "shapeName": "NextNotification",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ErrorNotification",
+        "kind": "interface",
+        "shapeName": "ErrorNotification",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "CompleteNotification",
+        "kind": "interface",
+        "shapeName": "CompleteNotification",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ObservableNotification",
+        "kind": "type",
+        "shapeName": "ObservableNotification",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "SubjectLike",
+        "kind": "interface",
+        "shapeName": "SubjectLike",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "TimestampProvider",
+        "kind": "interface",
+        "shapeName": "TimestampProvider",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ObservedValueUnionFromArray",
+        "kind": "type",
+        "shapeName": "ObservedValueUnionFromArray",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      }
+    ]
+  },
+  "failedShapes": {
+    "maxAllowed": 10,
+    "stableList": []
+  },
+  "confidence": {
+    "min": 0.95
+  },
+  "assertions": {
+    "minShapesBuilt": 87,
+    "maxShapesBuilt": 131,
+    "mustHaveRemovedExports": true,
+    "mustHaveAddedExports": true,
+    "maxFailedShapes": 10
+  }
+}

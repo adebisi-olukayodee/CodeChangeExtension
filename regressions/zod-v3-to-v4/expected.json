@@ -1,0 +1,285 @@
+{
+  "metadata": {
+    "beforeSha": "e7a9b9b3033991be6b4225f1be21da39c250bbb0",
+    "afterSha": "b259211157ec62299d7e2fad005827979d087b21",
+    "testName": "zod-v3-to-v4",
+    "description": "zod-v3-to-v4 regression test",
+    "pinnedRefs": {
+      "before": "e7a9b9b",
+      "after": "b259211"
+    }
+  },
+  "counts": {
+    "exportsDiff": {
+      "added": 27,
+      "removed": 241,
+      "changed": 0
+    },
+    "apiDiff": {
+      "added": 24,
+      "removed": 238,
+      "modified": 0,
+      "renamed": 5
+    }
+  },
+  "regressionChecks": {
+    "removedExportsDetected": true,
+    "removedExportsCount": 238,
+    "modifiedExportsCount": 0,
+    "addedExportsCount": 24,
+    "renamedExportsCount": 5,
+    "hasBreakingChanges": true
+  },
+  "sampleSymbols": {
+    "removed": [
+      {
+        "name": "setErrorMap",
+        "kind": "enum",
+        "shapeName": "setErrorMap",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "getErrorMap",
+        "kind": "enum",
+        "shapeName": "getErrorMap",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "addIssueToContext",
+        "kind": "enum",
+        "shapeName": "addIssueToContext",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "makeIssue",
+        "kind": "interface",
+        "shapeName": "makeIssue",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseParams",
+        "kind": "type",
+        "shapeName": "ParseParams",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParsePathComponent",
+        "kind": "type",
+        "shapeName": "ParsePathComponent",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParsePath",
+        "kind": "type",
+        "shapeName": "ParsePath",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "EMPTY_PATH",
+        "kind": "interface",
+        "shapeName": "EMPTY_PATH",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseContext",
+        "kind": "interface",
+        "shapeName": "ParseContext",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseInput",
+        "kind": "type",
+        "shapeName": "ParseInput",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ObjectPair",
+        "kind": "type",
+        "shapeName": "ObjectPair",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseStatus",
+        "kind": "type",
+        "shapeName": "ParseStatus",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ParseResult",
+        "kind": "interface",
+        "shapeName": "ParseResult",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "SyncParseReturnType",
+        "kind": "type",
+        "shapeName": "SyncParseReturnType",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "AsyncParseReturnType",
+        "kind": "type",
+        "shapeName": "AsyncParseReturnType",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      }
+    ],
+    "added": [
+      {
+        "name": "globalRegistry",
+        "kind": "interface",
+        "shapeName": "globalRegistry",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "GlobalMeta",
+        "kind": "interface",
+        "shapeName": "GlobalMeta",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "registry",
+        "kind": "enum",
+        "shapeName": "registry",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "config",
+        "kind": "enum",
+        "shapeName": "config",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "$output",
+        "kind": "interface",
+        "shapeName": "$output",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "$input",
+        "kind": "interface",
+        "shapeName": "$input",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "$brand",
+        "kind": "interface",
+        "shapeName": "$brand",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "clone",
+        "kind": "enum",
+        "shapeName": "clone",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "treeifyError",
+        "kind": "enum",
+        "shapeName": "treeifyError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "prettifyError",
+        "kind": "enum",
+        "shapeName": "prettifyError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "formatError",
+        "kind": "enum",
+        "shapeName": "formatError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "flattenError",
+        "kind": "enum",
+        "shapeName": "flattenError",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "toJSONSchema",
+        "kind": "enum",
+        "shapeName": "toJSONSchema",
+        "detailedShape": {
+          "memberCount": 0
+        }
+      },
+      {
+        "name": "TimePrecision",
+        "kind": "interface",
+        "shapeName": "TimePrecision",
+        "detailedShape": {
+          "propertyCount": 0
+        }
+      },
+      {
+        "name": "ZodISODateTime",
+        "kind": "variable",
+        "shapeName": "ZodISODateTime",
+        "detailedShape": {
+          "type": "any"
+        }
+      }
+    ]
+  },
+  "assertions": {
+    "minShapesBuilt": 23,
+    "maxShapesBuilt": 35,
+    "mustHaveRemovedExports": true,
+    "mustHaveAddedExports": true
+  }
+}

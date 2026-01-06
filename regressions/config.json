@@ -1,0 +1,137 @@
+{
+  "repos": [
+    {
+      "id": "date-fns-v2-to-v3",
+      "url": "https://github.com/date-fns/date-fns.git",
+      "beforeRef": "8673605",
+      "afterRef": "95b84c7",
+      "mode": "api-snapshot",
+      "paths": [
+        "src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Heavy re-exports (barrel files), function-heavy API"
+    },
+    {
+      "id": "zod-v3-to-v4",
+      "url": "https://github.com/colinhacks/zod.git",
+      "beforeRef": "v3.22.4",
+      "afterRef": "v4.0.1",
+      "mode": "api-snapshot",
+      "paths": [
+        "src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Type-heavy library with classes and type exports"
+    },
+    {
+      "id": "axios-0.27-to-1.0",
+      "url": "https://github.com/axios/axios.git",
+      "beforeRef": "v0.27.2",
+      "afterRef": "v1.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "index.d.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Default export + named exports, class-based"
+    },
+    {
+      "id": "tanstack-query-v4-to-v5",
+      "url": "https://github.com/TanStack/query.git",
+      "beforeRef": "v4.36.1",
+      "afterRef": "v5.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "packages/query-core/src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Heavy generic/signature changes"
+    },
+    {
+      "id": "rxjs-v6-to-v7",
+      "url": "https://github.com/ReactiveX/rxjs.git",
+      "beforeRef": "6.6.7",
+      "afterRef": "7.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Many changed-in-place APIs"
+    },
+    {
+      "id": "redux-toolkit-v1-to-v2",
+      "url": "https://github.com/reduxjs/redux-toolkit.git",
+      "beforeRef": "v1.9.7",
+      "afterRef": "v2.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "packages/toolkit/src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Major version upgrade with breaking changes"
+    },
+    {
+      "id": "trpc-server-v10-to-v11",
+      "url": "https://github.com/trpc/trpc.git",
+      "beforeRef": "v10.45.2",
+      "afterRef": "v11.8.1",
+      "mode": "api-snapshot",
+      "paths": [
+        "packages/server/src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Major version upgrade with API changes"
+    },
+    {
+      "id": "chalk-v4-to-v5",
+      "url": "https://github.com/chalk/chalk.git",
+      "beforeRef": "v4.1.2",
+      "afterRef": "v5.3.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "source/index.js"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Pure ESM break (v4 is CJS, v5 is ESM)"
+    },
+    {
+      "id": "lodash-4.17-to-4.18",
+      "url": "https://github.com/lodash/lodash.git",
+      "beforeRef": "4.17.21",
+      "afterRef": "4.17.22",
+      "mode": "api-snapshot",
+      "paths": [
+        "index.js"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "CJS behavior test - patch version (4.18.0 doesn't exist yet)"
+    },
+    {
+      "id": "lodash-es-4.17-to-4.18",
+      "url": "https://github.com/lodash/lodash.git",
+      "beforeRef": "4.17.21",
+      "afterRef": "4.18.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "es/index.js"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Function-heavy with many re-exports",
+      "skip": true
+    },
+    {
+      "id": "express-4.17-to-4.18",
+      "url": "https://github.com/expressjs/express.git",
+      "beforeRef": "4.17.5",
+      "afterRef": "4.18.2",
+      "mode": "api-snapshot",
+      "paths": [
+        "index.d.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "CJS behavior test - minor version change"
+    }
+  ]
+}
