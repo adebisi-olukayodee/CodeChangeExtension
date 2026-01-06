@@ -495,6 +495,12 @@ export class DependencyAnalyzer {
         // Normalize source file path for comparison - use consistent format
         const normalizedSource = path.resolve(sourceFilePath).replace(/\\/g, '/');
         
+        // Build reverse import graph and export graph first (needed for both approaches)
+        if (this.reverseDeps.size === 0 || this.exportGraph.size === 0) {
+            console.log(`[DependencyAnalyzer] Building import/export graphs...`);
+            await this.buildReverseImportGraph(projectRoot);
+        }
+        
         // Try direct file scanning first (more reliable than graph)
         const directScanResults = await this.findDownstreamByDirectScan(normalizedSource, projectRoot, impactedSymbols);
         if (directScanResults.length > 0) {
@@ -504,11 +510,6 @@ export class DependencyAnalyzer {
         
         // Fallback to graph-based approach
         console.log(`[DependencyAnalyzer] Direct scan found 0 files, trying graph-based approach...`);
-        
-        // Build reverse import graph if not already built
-        if (this.reverseDeps.size === 0) {
-            await this.buildReverseImportGraph(projectRoot);
-        }
         
         // If graph was built from /after but caller gave /before, map it
         let graphKey = normalizedSource;
@@ -737,7 +738,7 @@ export class DependencyAnalyzer {
                     const content = fs.readFileSync(filePath, 'utf8');
                     
                     // Check if file imports the source file (using various import path formats)
-                    if (this.fileImportsSource(content, sourceFilePath, sourceFileName, relativeSourcePath, relativeFilePath)) {
+                    if (this.fileImportsSource(content, filePath, sourceFilePath, sourceFileName, relativeSourcePath, relativeFilePath)) {
                         console.log(`[DependencyAnalyzer.findImportingFiles] ✅ Found importing file: ${filePath}`);
                         importingFiles.push(filePath);
                     }
@@ -819,36 +820,136 @@ export class DependencyAnalyzer {
 
     private fileImportsSource(
         content: string, 
+        filePath: string,
         sourceFilePath: string, 
-        sourceFileName: string, 
+        sourceFileName?: string, 
         relativeSourcePath?: string,
         relativeFilePath?: string
     ): boolean {
-        const relativePath = relativeSourcePath || path.relative(path.dirname(sourceFilePath), sourceFilePath);
+        // Calculate relative paths from the file being checked to the source file
+        const fileDir = path.dirname(filePath);
+        const sourceDir = path.dirname(sourceFilePath);
+        const sourceBaseName = path.basename(sourceFilePath, path.extname(sourceFilePath));
+        const sourceFullName = path.basename(sourceFilePath);
+        
+        // Calculate relative path from file to source
+        let relativePath = path.relative(fileDir, sourceFilePath).replace(/\\/g, '/');
+        // Remove extension for import matching
+        const relativePathNoExt = relativePath.replace(/\.(ts|tsx|js|jsx)$/, '');
+        // Also try relative to directory
+        const relativeDirPath = path.relative(fileDir, sourceDir).replace(/\\/g, '/');
+        
+        // Also extract path segments for flexible matching (monorepo support)
+        // e.g., if source is packages/ui/src/index.ts, match imports containing "packages/ui" or "ui/src"
+        const sourcePathSegments = sourceFilePath.replace(/\\/g, '/').split('/');
+        const sourcePathVariations: string[] = [];
+        // Try to find meaningful path segments (skip common dirs like 'src', 'lib')
+        const meaningfulSegments = sourcePathSegments.filter(seg => 
+            seg && !['src', 'lib', 'dist', 'build'].includes(seg) && !seg.endsWith('.ts') && !seg.endsWith('.tsx')
+        );
+        if (meaningfulSegments.length > 0) {
+            // Add last 2-3 meaningful segments
+            const lastSegments = meaningfulSegments.slice(-3);
+            sourcePathVariations.push(lastSegments.join('/'));
+            if (lastSegments.length > 1) {
+                sourcePathVariations.push(lastSegments.slice(-2).join('/'));
+            }
+        }
+        
+        // Use provided parameters if available, otherwise calculate
+        const checkSourceFileName = sourceFileName || sourceBaseName;
+        const checkRelativeSourcePath = relativeSourcePath || relativeDirPath;
+        const checkRelativeFilePath = relativeFilePath || relativePathNoExt;
+        
+        // Also check for package imports - try to find package.json near source file
+        let packageName: string | null = null;
+        let packagePath: string | null = null;
+        try {
+            let currentDir = sourceDir;
+            for (let i = 0; i < 10; i++) { // Limit search depth
+                const packageJsonPath = path.join(currentDir, 'package.json');
+                if (fs.existsSync(packageJsonPath)) {
+                    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+                    if (packageJson.name) {
+                        packageName = packageJson.name;
+                        packagePath = path.relative(currentDir, sourceFilePath).replace(/\\/g, '/').replace(/\.(ts|tsx|js|jsx)$/, '');
+                        break;
+                    }
+                }
+                const parentDir = path.dirname(currentDir);
+                if (parentDir === currentDir) break;
+                currentDir = parentDir;
+            }
+        } catch (error) {
+            // Ignore errors
+        }
+        
+        // Escape for regex
+        const escape = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         
         // Check for various import patterns
-        // Pattern 1: import { x } from './lib' or from '../lib' or from 'src/lib'
-        // Pattern 2: import { x } from './lib/index' or from '../lib/index'
-        // Pattern 3: import x from './lib'
-        const importPatterns = [
-            // Relative path to directory: './lib', '../lib', 'src/lib'
-            new RegExp(`from\\s+['"]\\.?/?${relativeSourcePath || sourceFileName}['"]`, 'i'),
-            // Relative path to file: './lib/index', '../lib/index'
-            relativeFilePath ? new RegExp(`from\\s+['"]\\.?/?${relativeFilePath}['"]`, 'i') : null,
-            // Just the filename: 'index'
-            new RegExp(`from\\s+['"]\\.?/?${sourceFileName}['"]`, 'i'),
+        const importPatterns: RegExp[] = [
+            // Relative path to file without extension: './path/to/index', '../path/to/index'
+            new RegExp(`from\\s+['"]${escape(checkRelativeFilePath)}['"]`, 'i'),
+            // Relative path to file with extension: './path/to/index.ts'
+            new RegExp(`from\\s+['"]${escape(relativePath)}['"]`, 'i'),
+            // Relative path to directory: './path/to', '../path/to'
+            new RegExp(`from\\s+['"]${escape(checkRelativeSourcePath)}['"]`, 'i'),
+            // Just the filename without extension: 'index'
+            new RegExp(`from\\s+['"]${escape(checkSourceFileName)}['"]`, 'i'),
             // require() patterns
-            new RegExp(`require\\(['"]\\.?/?${relativeSourcePath || sourceFileName}['"]\\)`, 'i'),
-            relativeFilePath ? new RegExp(`require\\(['"]\\.?/?${relativeFilePath}['"]\\)`, 'i') : null,
+            new RegExp(`require\\(['"]${escape(checkRelativeFilePath)}['"]\\)`, 'i'),
+            new RegExp(`require\\(['"]${escape(relativePath)}['"]\\)`, 'i'),
+            new RegExp(`require\\(['"]${escape(checkRelativeSourcePath)}['"]\\)`, 'i'),
             // import() patterns
-            new RegExp(`import\\(['"]\\.?/?${relativeSourcePath || sourceFileName}['"]\\)`, 'i'),
-            relativeFilePath ? new RegExp(`import\\(['"]\\.?/?${relativeFilePath}['"]\\)`, 'i') : null,
-        ].filter(p => p !== null) as RegExp[];
+            new RegExp(`import\\(['"]${escape(checkRelativeFilePath)}['"]\\)`, 'i'),
+            new RegExp(`import\\(['"]${escape(relativePath)}['"]\\)`, 'i'),
+            new RegExp(`import\\(['"]${escape(checkRelativeSourcePath)}['"]\\)`, 'i'),
+        ];
+        
+        // Add package import patterns if package name found
+        if (packageName) {
+            const escapedPackageName = escape(packageName);
+            // Package name only: 'package-name' or '@scope/package-name'
+            importPatterns.push(
+                new RegExp(`from\\s+['"]${escapedPackageName}['"]`, 'i'),
+                new RegExp(`require\\(['"]${escapedPackageName}['"]\\)`, 'i'),
+                new RegExp(`import\\(['"]${escapedPackageName}['"]\\)`, 'i')
+            );
+            
+            // Package name with path: 'package-name/src' or '@scope/package-name/src'
+            if (packagePath) {
+                const escapedPackagePath = escape(packagePath);
+                importPatterns.push(
+                    new RegExp(`from\\s+['"]${escapedPackageName}/${escapedPackagePath}['"]`, 'i'),
+                    new RegExp(`require\\(['"]${escapedPackageName}/${escapedPackagePath}['"]\\)`, 'i'),
+                    new RegExp(`import\\(['"]${escapedPackageName}/${escapedPackagePath}['"]\\)`, 'i')
+                );
+            }
+        }
+        
+        // Add path segment matching for monorepo imports
+        // Match imports that contain key path segments (e.g., "packages/ui" or "ui/src")
+        for (const pathVar of sourcePathVariations) {
+            if (pathVar && pathVar.length > 3) { // Only meaningful paths
+                const escapedPathVar = escape(pathVar);
+                importPatterns.push(
+                    new RegExp(`from\\s+['"][^'"]*${escapedPathVar}[^'"]*['"]`, 'i'),
+                    new RegExp(`require\\(['"][^'"]*${escapedPathVar}[^'"]*['"]\\)`, 'i'),
+                    new RegExp(`import\\(['"][^'"]*${escapedPathVar}[^'"]*['"]\\)`, 'i')
+                );
+            }
+        }
         
         const matches = importPatterns.some(pattern => {
             const match = pattern.test(content);
             if (match) {
                 console.log(`[DependencyAnalyzer.fileImportsSource] ✅ Pattern matched: ${pattern.source}`);
+                console.log(`[DependencyAnalyzer.fileImportsSource]   File: ${path.basename(filePath)}, Source: ${path.basename(sourceFilePath)}`);
+                console.log(`[DependencyAnalyzer.fileImportsSource]   Relative path: ${checkRelativeFilePath}`);
+                if (packageName) {
+                    console.log(`[DependencyAnalyzer.fileImportsSource]   Package name: ${packageName}`);
+                }
             }
             return match;
         });
@@ -1000,6 +1101,8 @@ export class DependencyAnalyzer {
         
         collectFiles(projectRoot);
         console.log(`[DependencyAnalyzer] Scanning ${allFiles.length} files for imports of ${sourceRelPath}`);
+        console.log(`[DependencyAnalyzer] Source file: ${sourceFilePath}`);
+        console.log(`[DependencyAnalyzer] Source relative path: ${sourceRelPath}`);
         
         // Add re-exporting files to downstream (they're definitely impacted)
         for (const reExportFile of reExportingFiles) {
@@ -1036,12 +1139,17 @@ export class DependencyAnalyzer {
                         if (this.fileUsesSymbols(filePath, impactedSymbols, sourceFilePath)) {
                             downstreamFiles.push(filePath);
                             console.log(`[DependencyAnalyzer] ✅ Found downstream file: ${path.relative(projectRoot, filePath)}`);
+                        } else {
+                            console.log(`[DependencyAnalyzer] ⚠️ File imports source but doesn't use symbols: ${path.relative(projectRoot, filePath)}`);
                         }
                     } else {
                         // No symbol filtering - include all files that import the source
                         downstreamFiles.push(filePath);
                         console.log(`[DependencyAnalyzer] ✅ Found downstream file (no symbol filter): ${path.relative(projectRoot, filePath)}`);
                     }
+                } else {
+                    // Debug: log why file wasn't considered downstream
+                    console.log(`[DependencyAnalyzer] File does not import source: ${path.relative(projectRoot, filePath)}`);
                 }
             } catch (error) {
                 // Skip files we can't read
