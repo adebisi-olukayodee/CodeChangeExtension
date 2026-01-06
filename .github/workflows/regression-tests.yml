@@ -37,6 +37,11 @@ jobs:
           npm run test:regression:axios
           npm run test:regression:tanstack-query || echo "tanstack-query test not yet promoted"
           npm run test:regression:rxjs || echo "rxjs test not yet promoted"
+          npm run test:regression:redux-toolkit || echo "redux-toolkit test not yet promoted"
+          npm run test:regression:trpc || echo "trpc test not yet promoted"
+          npm run test:regression:chalk || echo "chalk test not yet promoted"
+          npm run test:regression:lodash || echo "lodash test not yet promoted"
+          npm run test:regression:express || echo "express test not yet promoted"
         continue-on-error: true
       
       - name: Upload test artifacts

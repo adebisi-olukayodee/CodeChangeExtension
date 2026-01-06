@@ -83,7 +83,9 @@ async function analyzeImpactWithDiff(params, debugLog) {
     const fileExt = path.extname(fullFilePath).toLowerCase();
     log(`File extension: ${fileExt}`);
     const languageAnalyzer = LanguageAnalyzerFactory_1.LanguageAnalyzerFactory.getAnalyzer(fullFilePath);
-    const dependencyAnalyzer = new DependencyAnalyzer_1.DependencyAnalyzer();
+    // Use a shared DependencyAnalyzer instance to maintain index across calls
+    // This allows incremental updates when files are created/renamed/saved
+    const dependencyAnalyzer = DependencyAnalyzer_1.DependencyAnalyzer.getInstance();
     const testFinder = new TestFinder_1.TestFinder();
     let changedFunctions = [];
     let changedClasses = [];
@@ -285,25 +287,56 @@ async function analyzeImpactWithDiff(params, debugLog) {
     log(`Filtered ${downstreamFiles.length} files: ${sourceDownstreamFiles.length} source files, ${testFilesFromDependencyAnalyzer.length} test files`);
     // Convert to relative paths
     const relativeDownstreamFiles = sourceDownstreamFiles.map(f => path.relative(projectRoot, f));
-    // Find affected tests
-    // Note: TestFinder may return empty in test environments without vscode.workspace
-    // For testing, we'll also do a simple file system scan
+    // Find affected tests - ONLY high-confidence tests with proven dependencies
+    // High-confidence criteria:
+    // 1. Tests found by DependencyAnalyzer (in downstreamFiles) - these have proven dependencies
+    // 2. Tests that directly import the changed file
+    // 3. (TS only) Tests with type reference paths to the changed file
     let affectedTests = [];
+    // Strategy 1: Tests found by DependencyAnalyzer (highest confidence - proven dependency)
+    const highConfidenceTests = new Set(testFilesFromDependencyAnalyzer);
+    // Strategy 2: Find tests that directly import the changed file
     try {
-        affectedTests = await testFinder.findAffectedTests(fullFilePath, changedCodeAnalysis);
+        const testsThatImportSource = await findTestsThatImportFile(fullFilePath, projectRoot);
+        for (const testFile of testsThatImportSource) {
+            highConfidenceTests.add(testFile);
+        }
     }
     catch (error) {
-        // Fallback: scan for test files manually
+        log(`Error finding tests that import source: ${error}`);
+    }
+    // Strategy 3: Try TestFinder for additional tests that import the file (TS type references, etc.)
+    try {
+        const testFinderResults = await testFinder.findAffectedTests(fullFilePath, changedCodeAnalysis);
+        // Only include tests from TestFinder if they have proven imports
+        // TestFinder's filterRelevantTests already checks for imports, so include those
+        for (const testFile of testFinderResults) {
+            // Verify it actually imports the source (TestFinder should have filtered, but double-check)
+            if (await testFileImportsSourceFile(testFile, fullFilePath, projectRoot)) {
+                highConfidenceTests.add(testFile);
+            }
+        }
+    }
+    catch (error) {
+        // Fallback: scan for test files manually, but only include those with proven imports
         console.log('TestFinder failed (likely in test environment), using fallback');
-        affectedTests = await findTestFilesFallback(fullFilePath, projectRoot, sourceDownstreamFiles);
+        const fallbackTests = await findTestFilesFallback(fullFilePath, projectRoot, sourceDownstreamFiles);
+        // The fallback already filters by imports, so include those
+        for (const testFile of fallbackTests) {
+            highConfidenceTests.add(testFile);
+        }
     }
-    // Add test files found by DependencyAnalyzer (they're transitive dependencies)
-    const affectedTestsSet = new Set(affectedTests);
-    for (const testFile of testFilesFromDependencyAnalyzer) {
-        affectedTestsSet.add(testFile);
+    // Gate: Only include high-confidence tests with proven dependencies
+    // If no proven dependencies exist, return empty array (don't guess)
+    affectedTests = Array.from(highConfidenceTests);
+    // Log summary
+    const hasProvenDependencies = sourceDownstreamFiles.length > 0 || testFilesFromDependencyAnalyzer.length > 0 || affectedTests.length > 0;
+    if (!hasProvenDependencies) {
+        log(`⚠️ No proven test dependencies found. Not including any tests in affected tests list (to avoid false positives).`);
     }
-    affectedTests = Array.from(affectedTestsSet);
-    log(`Found ${affectedTests.length} affected tests (${testFilesFromDependencyAnalyzer.length} from DependencyAnalyzer)`);
+    else {
+        log(`Found ${affectedTests.length} high-confidence affected tests (${testFilesFromDependencyAnalyzer.length} from DependencyAnalyzer, ${affectedTests.length - testFilesFromDependencyAnalyzer.length} from import analysis)`);
+    }
     // Convert to relative paths
     const relativeTests = affectedTests.map(f => path.relative(projectRoot, f));
     // Build issues list
@@ -508,10 +541,167 @@ function escapeRegex(str) {
  * Fallback test file finder for test environments.
  * Scans the project directory for test files that might reference the source file.
  */
+/**
+ * Helper: Check if a file imports another file (checks import/require statements)
+ */
+async function testFileImportsSourceFile(testFilePath, sourceFilePath, projectRoot) {
+    try {
+        const content = fs.readFileSync(testFilePath, 'utf8');
+        return fileImportsTarget(content, sourceFilePath, projectRoot);
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Helper: Check if content imports a target file
+ */
+function fileImportsTarget(content, targetPath, projectRoot) {
+    const normalizedTarget = path.resolve(targetPath);
+    const targetRel = path.relative(projectRoot, normalizedTarget).replace(/\\/g, '/');
+    const targetDir = path.dirname(normalizedTarget);
+    const targetDirRel = path.relative(projectRoot, targetDir).replace(/\\/g, '/');
+    const targetName = path.basename(normalizedTarget, path.extname(normalizedTarget));
+    const targetNameNoExt = path.basename(normalizedTarget, path.extname(normalizedTarget));
+    // Get package name from source file (e.g., 'axios' from 'index.d.ts')
+    // For package-level imports like 'import ... from "axios"'
+    const packageName = getPackageNameFromFile(targetPath, projectRoot);
+    // Escape special regex characters
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const targetRelEsc = esc(targetRel.replace(/\.(ts|tsx|js|jsx)$/, ''));
+    const targetDirRelEsc = esc(targetDirRel);
+    const targetNameEsc = esc(targetNameNoExt);
+    const packageNameEsc = packageName ? esc(packageName) : null;
+    // Allow ./ and ../ prefixes (repeatedly)
+    const prefix = `(?:\\.{1,2}\\/)*`;
+    // Check various import patterns
+    const patterns = [
+        // Relative imports: from './path/to/file' or from '../path/to/file'
+        new RegExp(`from\\s+['"]${prefix}${targetRelEsc}['"]`, 'i'),
+        new RegExp(`from\\s+['"]${prefix}${targetDirRelEsc}['"]`, 'i'),
+        new RegExp(`from\\s+['"]${prefix}${targetNameEsc}['"]`, 'i'),
+        new RegExp(`import\\s+.*\\s+from\\s+['"]${prefix}${targetRelEsc}['"]`, 'i'),
+        new RegExp(`import\\s*\\(\\s*['"]${prefix}${targetRelEsc}['"]`, 'i'),
+        new RegExp(`require\\s*\\(\\s*['"]${prefix}${targetRelEsc}['"]`, 'i'),
+    ];
+    // Add package-level import patterns (e.g., 'import ... from "axios"')
+    if (packageNameEsc) {
+        patterns.push(new RegExp(`from\\s+['"]${packageNameEsc}['"]`, 'i'), new RegExp(`import\\s+.*\\s+from\\s+['"]${packageNameEsc}['"]`, 'i'), new RegExp(`require\\s*\\(\\s*['"]${packageNameEsc}['"]`, 'i'));
+    }
+    return patterns.some(p => p.test(content));
+}
+/**
+ * Helper: Try to extract package name from file path
+ * E.g., for axios/index.d.ts -> 'axios'
+ */
+function getPackageNameFromFile(filePath, projectRoot) {
+    try {
+        // Check if file is in node_modules (external package)
+        if (filePath.includes('node_modules')) {
+            const parts = filePath.split(path.sep);
+            const nodeModulesIndex = parts.indexOf('node_modules');
+            if (nodeModulesIndex >= 0 && nodeModulesIndex + 1 < parts.length) {
+                return parts[nodeModulesIndex + 1];
+            }
+        }
+        // Check package.json in the file's directory tree
+        let currentDir = path.dirname(filePath);
+        const rootDir = projectRoot;
+        while (currentDir !== rootDir && currentDir !== path.dirname(currentDir)) {
+            const packageJsonPath = path.join(currentDir, 'package.json');
+            if (fs.existsSync(packageJsonPath)) {
+                try {
+                    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+                    return packageJson.name || null;
+                }
+                catch {
+                    // Invalid JSON, continue
+                }
+            }
+            currentDir = path.dirname(currentDir);
+        }
+    }
+    catch {
+        // Ignore errors
+    }
+    return null;
+}
+/**
+ * Find tests that directly import the source file (high-confidence)
+ */
+async function findTestsThatImportFile(sourceFilePath, projectRoot) {
+    const testFiles = [];
+    const testPatterns = [
+        /\.test\.(js|jsx|ts|tsx)$/i,
+        /\.spec\.(js|jsx|ts|tsx)$/i
+    ];
+    function walkDir(dir) {
+        try {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    // Skip node_modules and other build directories
+                    if (!['node_modules', '.git', 'dist', 'build', 'out'].includes(entry.name)) {
+                        walkDir(fullPath);
+                    }
+                }
+                else if (entry.isFile()) {
+                    const isTestFile = testPatterns.some(pattern => pattern.test(entry.name));
+                    if (isTestFile) {
+                        if (fileImportsTarget(fs.readFileSync(fullPath, 'utf8'), sourceFilePath, projectRoot)) {
+                            testFiles.push(fullPath);
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            // Skip if can't read
+        }
+    }
+    walkDir(projectRoot);
+    return [...new Set(testFiles)];
+}
+/**
+ * Find all test files in repo (for low-confidence suggestions when no dependencies proven)
+ */
+async function findAllTestFilesInRepo(projectRoot) {
+    const testFiles = [];
+    const testPatterns = [
+        /\.test\.(js|jsx|ts|tsx)$/i,
+        /\.spec\.(js|jsx|ts|tsx)$/i
+    ];
+    function walkDir(dir) {
+        try {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    if (!['node_modules', '.git', 'dist', 'build', 'out'].includes(entry.name)) {
+                        walkDir(fullPath);
+                    }
+                }
+                else if (entry.isFile()) {
+                    if (testPatterns.some(pattern => pattern.test(entry.name))) {
+                        testFiles.push(fullPath);
+                    }
+                }
+            }
+        }
+        catch {
+            // Skip if can't read
+        }
+    }
+    walkDir(projectRoot);
+    return [...new Set(testFiles)];
+}
+/**
+ * Fallback: Find test files that import the source or downstream files
+ * ONLY returns tests with proven imports (no name matching fallback)
+ */
 async function findTestFilesFallback(sourceFilePath, projectRoot, downstreamFiles = []) {
     const testFiles = [];
-    const sourceFileName = path.basename(sourceFilePath, path.extname(sourceFilePath));
-    const sourceDir = path.dirname(sourceFilePath);
     const normalizedSource = path.resolve(sourceFilePath);
     const normalizedDownstream = new Set(downstreamFiles.map(f => path.resolve(f)));
     // Test patterns
@@ -519,29 +709,6 @@ async function findTestFilesFallback(sourceFilePath, projectRoot, downstreamFile
         /\.test\.(js|jsx|ts|tsx)$/i,
         /\.spec\.(js|jsx|ts|tsx)$/i
     ];
-    // Helper to check if a file imports another file
-    function fileImportsTarget(content, targetPath, projectRoot) {
-        const targetRel = path.relative(projectRoot, targetPath).replace(/\\/g, '/').replace(/\.ts$/, '');
-        const targetDir = path.dirname(targetPath);
-        const targetDirRel = path.relative(projectRoot, targetDir).replace(/\\/g, '/');
-        const targetName = path.basename(targetPath, path.extname(targetPath));
-        // Escape special regex characters
-        const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const targetRelEsc = esc(targetRel);
-        const targetDirRelEsc = esc(targetDirRel);
-        const targetNameEsc = esc(targetName);
-        // Allow ./ and ../ prefixes (repeatedly)
-        const prefix = `(?:\\.{1,2}\\/)*`;
-        // Check various import patterns
-        const patterns = [
-            new RegExp(`from\\s+['"]${prefix}${targetRelEsc}['"]`, 'i'),
-            new RegExp(`from\\s+['"]${prefix}${targetDirRelEsc}['"]`, 'i'),
-            new RegExp(`from\\s+['"]${prefix}${targetNameEsc}['"]`, 'i'),
-            new RegExp(`import\\s*\\(\\s*['"]${prefix}${targetRelEsc}['"]`, 'i'),
-            new RegExp(`require\\s*\\(\\s*['"]${prefix}${targetRelEsc}['"]`, 'i'),
-        ];
-        return patterns.some(p => p.test(content));
-    }
     // Walk directory recursively
     function walkDir(dir) {
         try {
@@ -561,23 +728,19 @@ async function findTestFilesFallback(sourceFilePath, projectRoot, downstreamFile
                         try {
                             const content = fs.readFileSync(fullPath, 'utf8');
                             const normalizedPath = path.resolve(fullPath);
-                            // Check if test imports the source file
+                            // ONLY include if test imports the source file (proven dependency)
                             if (fileImportsTarget(content, normalizedSource, projectRoot)) {
                                 testFiles.push(fullPath);
                                 continue;
                             }
-                            // Check if test imports any downstream file
+                            // OR if test imports any downstream file (transitive dependency)
                             for (const downstream of normalizedDownstream) {
                                 if (fileImportsTarget(content, downstream, projectRoot)) {
                                     testFiles.push(fullPath);
                                     break;
                                 }
                             }
-                            // Also check simple name matching as fallback
-                            if (content.includes(sourceFileName) ||
-                                content.includes(path.basename(sourceFilePath))) {
-                                testFiles.push(fullPath);
-                            }
+                            // NO name matching fallback - only proven imports
                         }
                         catch {
                             // Skip if can't read

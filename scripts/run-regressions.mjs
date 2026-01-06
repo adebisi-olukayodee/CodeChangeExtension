@@ -550,7 +550,7 @@ async function main() {
         const conf = result.confidence ? ` (confidence: ${(result.confidence * 100).toFixed(1)}%)` : '';
         console.log(`[regression] DONE  ${r.id} ⚠️  ${result.failedShapes.total} failed shapes${conf}`);
       } else {
-        console.log(`[regression] DONE  ${r.id}`);
+      console.log(`[regression] DONE  ${r.id}`);
       }
     } catch (e) {
       console.error(`[regression] FAIL  ${r.id}`);

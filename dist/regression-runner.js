@@ -5,8 +5,10 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { TypeScriptAnalyzer } from './analyzers/language/TypeScriptAnalyzer.js';
+import { JavaScriptAnalyzer } from './analyzers/language/JavaScriptAnalyzer.js';
 import { computeApiDiff } from './analyzers/language/ApiDiff.js';
 import { apiDiffToFindings } from './analyzers/language/ApiRulesEngine.js';
+import * as ts from 'typescript';
 // Re-export for use in regression scripts
 export { computeApiDiff, apiDiffToFindings };
 /**
@@ -19,8 +21,9 @@ export async function runAnalyzer(options) {
     const { repoRoot, paths = [], tsconfig, mode = 'exports-only' } = options;
     // Normalize repo root to absolute path
     const absoluteRepoRoot = path.isAbsolute(repoRoot) ? path.normalize(repoRoot) : path.resolve(repoRoot);
-    // Initialize analyzer with project root
-    const analyzer = new TypeScriptAnalyzer(absoluteRepoRoot);
+    // Select analyzer based on file extension (use first file if multiple paths)
+    const firstPath = paths.length > 0 ? paths[0] : '';
+    const analyzer = selectAnalyzer(firstPath || 'dummy.ts', absoluteRepoRoot, tsconfig, mode);
     // If tsconfig is specified, try to load it
     // Note: TypeScriptAnalyzer uses ts-morph which handles tsconfig automatically
     // We just need to ensure the project root is set correctly
@@ -41,6 +44,10 @@ export async function runAnalyzer(options) {
         }
         try {
             const content = fs.readFileSync(filePath, 'utf8');
+            if (!analyzer.buildSnapshot) {
+                console.warn(`[regression-runner] Analyzer ${analyzer.getLanguage()} doesn't support buildSnapshot for ${filePath}`);
+                continue;
+            }
             const snapshot = await analyzer.buildSnapshot(filePath, content);
             // Convert snapshot to findings
             const fileFindings = snapshotToFindings(snapshot, absoluteRepoRoot);
@@ -183,6 +190,109 @@ function snapshotToFindings(snapshot, repoRoot) {
     return findings;
 }
 /**
+ * Checks if TypeScript type-checking is available for a specific JavaScript file.
+ * Returns true only if:
+ * - tsconfig.json exists
+ * - allowJs: true
+ * - checkJs: true (required for reliable type-checking)
+ * - file is included by the tsconfig (in include patterns or not excluded)
+ */
+function isTypeScriptTypeCheckingAvailableForJS(filePath, repoRoot, tsconfigPath) {
+    try {
+        const tsconfigFile = tsconfigPath
+            ? (path.isAbsolute(tsconfigPath) ? tsconfigPath : path.join(repoRoot, tsconfigPath))
+            : path.join(repoRoot, 'tsconfig.json');
+        if (!fs.existsSync(tsconfigFile)) {
+            return false;
+        }
+        const configFile = ts.readConfigFile(tsconfigFile, ts.sys.readFile);
+        if (configFile.error) {
+            return false;
+        }
+        const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, path.dirname(tsconfigFile));
+        // Require both allowJs and checkJs for reliable type-checking
+        const allowJs = parsed.options.allowJs ?? false;
+        const checkJs = parsed.options.checkJs ?? false;
+        if (!allowJs || !checkJs) {
+            return false;
+        }
+        // Check if file is included by tsconfig
+        const absoluteFilePath = path.isAbsolute(filePath) ? filePath : path.join(repoRoot, filePath);
+        const normalizedFilePath = path.normalize(absoluteFilePath);
+        // Check include patterns
+        if (parsed.raw.include && Array.isArray(parsed.raw.include)) {
+            const includes = parsed.raw.include.map((pattern) => path.normalize(path.resolve(path.dirname(tsconfigFile), pattern)));
+            const fileMatchesInclude = includes.some((includePattern) => {
+                // Simple pattern matching (supports glob patterns like "src/**/*")
+                if (includePattern.includes('**')) {
+                    const base = includePattern.replace(/\*\*/g, '');
+                    return normalizedFilePath.startsWith(path.normalize(base));
+                }
+                return normalizedFilePath.startsWith(includePattern);
+            });
+            if (!fileMatchesInclude && parsed.raw.include.length > 0) {
+                // File doesn't match include patterns
+                return false;
+            }
+        }
+        // Check exclude patterns
+        if (parsed.raw.exclude && Array.isArray(parsed.raw.exclude)) {
+            const excludes = parsed.raw.exclude.map((pattern) => path.normalize(path.resolve(path.dirname(tsconfigFile), pattern)));
+            const fileMatchesExclude = excludes.some((excludePattern) => {
+                if (excludePattern.includes('**')) {
+                    const base = excludePattern.replace(/\*\*/g, '');
+                    return normalizedFilePath.startsWith(path.normalize(base));
+                }
+                return normalizedFilePath.startsWith(excludePattern);
+            });
+            if (fileMatchesExclude) {
+                // File is explicitly excluded
+                return false;
+            }
+        }
+        return true;
+    }
+    catch (error) {
+        // If we can't read/parse tsconfig, assume type-checking is not available
+        return false;
+    }
+}
+/**
+ * Selects the appropriate analyzer based on file extension and type-checking availability.
+ *
+ * Rules:
+ * - .ts/.tsx: Always TypeScriptAnalyzer
+ * - .js/.jsx: JavaScriptAnalyzer by default (module-surface analysis)
+ * - .js/.jsx with "Typed JS" mode: TypeScriptAnalyzer only if:
+ *   - allowJs: true AND checkJs: true in tsconfig
+ *   - file is included by tsconfig
+ */
+function selectAnalyzer(filePath, repoRoot, tsconfig, mode = 'exports-only') {
+    const ext = path.extname(filePath).toLowerCase();
+    const isJSFile = ext === '.js' || ext === '.jsx';
+    const isTSFile = ext === '.ts' || ext === '.tsx';
+    if (isTSFile) {
+        // Always use TypeScriptAnalyzer for .ts/.tsx files
+        return new TypeScriptAnalyzer(repoRoot);
+    }
+    if (isJSFile) {
+        // For JS files, use JavaScriptAnalyzer by default (module-surface analysis)
+        // Only use TypeScriptAnalyzer in "Typed JS" mode when strict conditions are met
+        const isTypedJS = isTypeScriptTypeCheckingAvailableForJS(filePath, repoRoot, tsconfig);
+        if (mode === 'api-snapshot' && isTypedJS) {
+            console.log(`[regression-runner] Using TypeScriptAnalyzer for ${filePath} (Typed JS mode: allowJs + checkJs enabled, file included)`);
+            return new TypeScriptAnalyzer(repoRoot);
+        }
+        else {
+            console.log(`[regression-runner] Using JavaScriptAnalyzer for ${filePath} (module-surface analysis)`);
+            return new JavaScriptAnalyzer(repoRoot);
+        }
+    }
+    // Default to TypeScriptAnalyzer for unknown extensions
+    console.warn(`[regression-runner] Unknown file extension ${ext}, defaulting to TypeScriptAnalyzer`);
+    return new TypeScriptAnalyzer(repoRoot);
+}
+/**
  * Finds all TypeScript files in a directory recursively.
  */
 async function findTypeScriptFiles(rootDir) {
@@ -220,15 +330,13 @@ async function findTypeScriptFiles(rootDir) {
  * This is used in api-snapshot mode to analyze signature-level changes.
  */
 export async function buildApiSnapshot(options) {
-    const { repoRoot, paths = [] } = options;
+    const { repoRoot, paths = [], tsconfig } = options;
     if (paths.length === 0) {
         console.warn('[regression-runner] No entrypoint paths specified for API snapshot');
         return null;
     }
     // Normalize repo root to absolute path
     const absoluteRepoRoot = path.isAbsolute(repoRoot) ? path.normalize(repoRoot) : path.resolve(repoRoot);
-    // Initialize analyzer
-    const analyzer = new TypeScriptAnalyzer(absoluteRepoRoot);
     // For now, use the first path as the entrypoint
     // TODO: Support multiple entrypoints
     const entrypointPath = paths[0];
@@ -239,14 +347,80 @@ export async function buildApiSnapshot(options) {
         console.warn(`[regression-runner] Entrypoint file not found: ${absoluteEntrypointPath}`);
         return null;
     }
+    // Select analyzer based on file extension and type-checking availability
+    const analyzer = selectAnalyzer(entrypointPath, absoluteRepoRoot, tsconfig, 'api-snapshot');
+    // JavaScriptAnalyzer: module-surface snapshot (exports only, no type shapes)
+    if (analyzer instanceof JavaScriptAnalyzer) {
+        console.log(`[regression-runner] Using JavaScriptAnalyzer for module-surface analysis: ${entrypointPath}`);
+        if (!analyzer.buildSnapshot) {
+            console.error(`[regression-runner] JavaScriptAnalyzer doesn't support buildSnapshot`);
+            return null;
+        }
+        try {
+            const content = fs.readFileSync(absoluteEntrypointPath, 'utf8');
+            const snapshot = await analyzer.buildSnapshot(absoluteEntrypointPath, content);
+            // JavaScriptAnalyzer provides module-surface snapshot:
+            // - Named exports, default export, re-exports (when resolvable)
+            // - Module system shape (CJS vs ESM)
+            // - No type shapes (that requires TypeScript type-checking)
+            const exports = new Map();
+            for (const exp of snapshot.exports) {
+                // Create identity: exportName|type|filePath|line
+                const expType = exp.type === 'default' ? 'default' :
+                    exp.type === 'namespace' ? 'namespace' : 'value';
+                const identity = `${exp.name}|${expType}|${absoluteEntrypointPath}|${exp.line || 0}`;
+                // Create minimal shape (module-surface only, no type information)
+                exports.set(identity, {
+                    kind: exp.kind || 'variable',
+                    name: exp.name,
+                    // Note: No type information available without TypeScript type-checking
+                });
+            }
+            return {
+                entrypointPath: absoluteEntrypointPath,
+                exports,
+                timestamp: new Date(),
+                partial: true,
+                failedShapes: 0,
+                failedShapeNames: [],
+                moduleSystem: snapshot.moduleSystem,
+                analysisMode: 'Module-surface' // Label as module-surface snapshot
+            };
+        }
+        catch (error) {
+            console.error(`[regression-runner] Error building module-surface snapshot with JavaScriptAnalyzer:`, error);
+            return null;
+        }
+    }
+    // TypeScriptAnalyzer path (for TS files or Typed JS files)
+    const tsAnalyzer = analyzer;
+    if (!tsAnalyzer.buildSnapshot) {
+        console.error(`[regression-runner] TypeScriptAnalyzer doesn't support buildSnapshot`);
+        return null;
+    }
+    // Check if this is a JS file being analyzed with TypeScript (Typed JS mode)
+    const ext = path.extname(entrypointPath).toLowerCase();
+    const isJSFile = ext === '.js' || ext === '.jsx';
+    const isTypedJS = isJSFile && isTypeScriptTypeCheckingAvailableForJS(entrypointPath, absoluteRepoRoot, tsconfig);
     try {
         // Build snapshot for entrypoint
         const content = fs.readFileSync(absoluteEntrypointPath, 'utf8');
-        const snapshot = await analyzer.buildSnapshot(absoluteEntrypointPath, content);
+        const snapshot = await tsAnalyzer.buildSnapshot(absoluteEntrypointPath, content);
         // Resolve exports to their declaration locations
-        const resolvedExports = await analyzer.resolveEntrypointExportsToDeclarations(absoluteEntrypointPath, snapshot.exports);
+        const resolvedExports = await tsAnalyzer.resolveEntrypointExportsToDeclarations(absoluteEntrypointPath, snapshot.exports);
         // Build API snapshot from resolved exports
-        const apiSnapshot = await analyzer.buildApiSnapshotFromResolvedExports(absoluteEntrypointPath, resolvedExports);
+        const apiSnapshot = await tsAnalyzer.buildApiSnapshotFromResolvedExports(absoluteEntrypointPath, resolvedExports);
+        // Label the analysis mode
+        if (isTypedJS) {
+            apiSnapshot.analysisMode = 'Typed JS (TS checker)';
+        }
+        else if (isJSFile) {
+            // This shouldn't happen (should be caught by JavaScriptAnalyzer path above)
+            apiSnapshot.analysisMode = 'Module-surface';
+        }
+        else {
+            apiSnapshot.analysisMode = 'TypeScript';
+        }
         return apiSnapshot;
     }
     catch (error) {

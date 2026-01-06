@@ -6,7 +6,7 @@ import { ConfigurationManager } from './ConfigurationManager';
 // We use PureImpactAnalyzer instead
 import { GitAnalyzer } from '../analyzers/GitAnalyzer';
 import { ConfidenceEngine, ConfidenceResult } from './ConfidenceEngine';
-import { analyzeImpact } from './PureImpactAnalyzer';
+import { analyzeImpact, analyzeImpactWithDiff } from './PureImpactAnalyzer';
 import { ImpactReport } from '../types/ImpactReport';
 import { debugLog } from './debug-logger';
 
@@ -260,39 +260,77 @@ export class ProfessionalImpactAnalyzer {
      * Initialize baseline from disk when file is first opened
      * This ensures baseline is ready before first save/analysis
      * Called from onDidOpenTextDocument listener
+     * 
+     * If no git repository is detected, baseline is initialized immediately on file open.
+     * If git repository exists and file is tracked, Git baseline is used instead.
      */
     async initializeBaselineIfNeeded(filePath: string): Promise<void> {
-        // Skip if Git is available and file is tracked (use Git baseline instead)
-        if (this.configManager.get('gitIntegration', true)) {
-            try {
-                const isTracked = await this.gitAnalyzer.isFileTracked(filePath);
-                if (isTracked) {
-                    // File is tracked in Git - will use Git baseline, don't initialize snapshot
-                    this.debugLog(`File is tracked in Git - skipping snapshot baseline initialization`);
-                    return;
-                }
-            } catch (error) {
-                // Git check failed - proceed with snapshot initialization
-                this.debugLog(`Git check failed: ${error} - proceeding with snapshot initialization`);
-            }
-        }
-
+        // Only initialize baseline from disk if NO git repository exists
+        // If git repository exists, let analyzeFile() handle git baseline resolution
+        
         // Check if baseline already exists
         if (this.baselineCache.has(filePath)) {
             this.debugLog(`Baseline already initialized for: ${filePath}`);
             return;
         }
 
-        // Initialize baseline from disk (saved state at open)
+        // Check if git repository exists
+        let hasGitRepo = false;
+        if (this.configManager.get('gitIntegration', true)) {
+            try {
+                // Check if there's a git repository in the workspace
+                const workspaceRoot = this.getWorkspaceRoot(filePath);
+                hasGitRepo = await this.gitAnalyzer.isGitRepository(workspaceRoot);
+                
+                if (hasGitRepo) {
+                    // Git repository exists - don't initialize from disk
+                    // analyzeFile() will handle git baseline resolution
+                    this.debugLog(`Git repository detected - skipping disk baseline initialization (will use git baseline in analyzeFile)`);
+                    return;
+                }
+            } catch (error) {
+                // Git check failed - assume no git repo and proceed with disk initialization
+                this.debugLog(`Git check failed: ${error} - assuming no git repo, proceeding with disk initialization`);
+                hasGitRepo = false;
+            }
+        }
+
+        // No git repository detected - initialize baseline from disk immediately
+        // This ensures baseline is ready before first save/analysis for non-git projects
+        this.debugLog(`No git repository detected - initializing baseline from disk immediately for: ${filePath}`);
         try {
             const diskContent = fs.readFileSync(filePath, 'utf8');
             this.baselineCache.set(filePath, diskContent);
             this.debugLog(`✅ Initialized baseline from disk for: ${filePath} (${diskContent.length} chars)`);
-            console.log(`[Baseline Init] Initialized baseline from disk: ${filePath}`);
+            console.log(`[Baseline Init] Initialized baseline from disk: ${filePath} (no git repo detected)`);
         } catch (error) {
             this.debugLog(`❌ Failed to initialize baseline from disk: ${error}`);
             console.error(`[Baseline Init] Failed to initialize baseline: ${error}`);
         }
+    }
+    
+    /**
+     * Get workspace root directory for a file path
+     */
+    private getWorkspaceRoot(filePath: string): string | undefined {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            // Fallback to file's directory
+            return path.dirname(filePath);
+        }
+        
+        // Find the workspace folder that contains this file
+        for (const folder of workspaceFolders) {
+            const folderPath = folder.uri.fsPath;
+            const relativePath = path.relative(folderPath, filePath);
+            if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
+                return folderPath;
+            }
+        }
+        
+        // Default to first workspace folder
+        return workspaceFolders[0].uri.fsPath;
     }
 
     async analyzeFile(filePath: string, document?: vscode.TextDocument, forceAnalysis: boolean = true): Promise<ImpactAnalysisResult> {
@@ -748,13 +786,18 @@ export class ProfessionalImpactAnalyzer {
             
             // AST-based analysis: parses both versions, finds semantic changes (functions, classes, etc.)
             let report;
+            let snapshotDiff: any = undefined;
             try {
-                report = await analyzeImpact({
+                // Use analyzeImpactWithDiff to get both report and snapshotDiff (which contains breaking change info)
+                const impactResult = await analyzeImpactWithDiff({
                     file: relativeFilePath,
                     before: before,  // From Git HEAD or cached snapshot
                     after: after,   // Current file content
                     projectRoot: projectRoot
                 }, (msg: string) => this.debugLog(`[PureImpactAnalyzer] ${msg}`));
+                
+                report = impactResult.report;
+                snapshotDiff = impactResult.snapshotDiff;
                 
                 // If we got here, parsing succeeded (analyzeImpact handles parse errors internally)
                 parseStatus = {
@@ -826,7 +869,7 @@ export class ProfessionalImpactAnalyzer {
                 confidence: this.calculateConfidenceFromReport(report),
                 estimatedTestTime: this.estimateTestTime(report.tests),
                 coverageImpact: this.calculateCoverageImpactFromReport(report),
-                riskLevel: this.calculateRiskLevelFromReport(report),
+                riskLevel: this.calculateRiskLevelFromReport(report, snapshotDiff),
                 timestamp: new Date(),
                 gitChanges,
                 hasActualChanges: true,
@@ -968,7 +1011,17 @@ export class ProfessionalImpactAnalyzer {
         return Math.min(report.functions.length * 5, 100);
     }
 
-    private calculateRiskLevelFromReport(report: ImpactReport): 'low' | 'medium' | 'high' {
+    private calculateRiskLevelFromReport(report: ImpactReport, snapshotDiff?: any): 'low' | 'medium' | 'high' {
+        // If there are breaking changes, always mark as high risk
+        if (snapshotDiff?.changedSymbols) {
+            const breakingChanges = snapshotDiff.changedSymbols.filter((s: any) => s.isBreaking);
+            if (breakingChanges.length > 0) {
+                this.debugLog(`⚠️ Breaking changes detected: ${breakingChanges.length} - setting risk level to HIGH`);
+                return 'high';
+            }
+        }
+        
+        // Otherwise, calculate based on impact scope
         const riskScore = report.functions.length + report.downstreamFiles.length + report.tests.length;
         if (riskScore <= 2) return 'low';
         if (riskScore <= 5) return 'medium';
@@ -1058,3 +1111,4 @@ export class ProfessionalImpactAnalyzer {
         }
     }
 }
+

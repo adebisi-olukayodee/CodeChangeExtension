@@ -31,6 +31,84 @@ class DependencyAnalyzer {
         this.reverseDeps = new Map(); // target -> Set<importers>
     }
     /**
+     * Get singleton instance for shared dependency index
+     */
+    static getInstance() {
+        if (!DependencyAnalyzer.instance) {
+            DependencyAnalyzer.instance = new DependencyAnalyzer();
+        }
+        return DependencyAnalyzer.instance;
+    }
+    /**
+     * Reset singleton instance (for testing)
+     */
+    static resetInstance() {
+        DependencyAnalyzer.instance = null;
+    }
+    /**
+     * Normalize path consistently (realpath/case/slashes) for matching
+     * This ensures resolvedPath === analyzedFilePath matches correctly
+     */
+    normalizePath(filePath) {
+        try {
+            // Use realpath to resolve symlinks and get canonical path
+            const realPath = fs.realpathSync.native(filePath);
+            // Normalize separators (always use forward slashes for consistency)
+            const normalized = path.normalize(realPath).replace(/\\/g, '/');
+            // On Windows, normalize case (toLowerCase) for case-insensitive matching
+            // On Unix, keep case as-is
+            return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+        }
+        catch (error) {
+            // If realpath fails (file doesn't exist), fall back to basic normalization
+            const normalized = path.normalize(filePath).replace(/\\/g, '/');
+            return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+        }
+    }
+    /**
+     * Invalidate dependency index for a file (remove from graph)
+     * Call this when a file is deleted or renamed
+     */
+    invalidateFile(filePath) {
+        const normalized = this.normalizePath(filePath);
+        // Remove as a target (file being imported)
+        this.reverseDeps.delete(normalized);
+        // Remove as an importer (file that imports others)
+        for (const [target, importers] of this.reverseDeps.entries()) {
+            importers.delete(normalized);
+        }
+    }
+    /**
+     * Rebuild dependency index for a specific file
+     * Call this when a file is created, renamed, or saved
+     */
+    async rebuildFileIndex(filePath, projectRoot) {
+        // First invalidate old entries
+        this.invalidateFile(filePath);
+        // Then rebuild for this file
+        try {
+            if (!this.isSourceFile(path.basename(filePath))) {
+                return; // Not a source file, skip
+            }
+            const content = fs.readFileSync(filePath, 'utf8');
+            const imports = this.parseImports(content, filePath, projectRoot);
+            const normalizedFrom = this.normalizePath(filePath);
+            for (const imp of imports) {
+                const resolved = this.resolveImport(imp.specifier, filePath, projectRoot);
+                if (resolved) {
+                    const normalizedResolved = this.normalizePath(resolved);
+                    if (!this.reverseDeps.has(normalizedResolved)) {
+                        this.reverseDeps.set(normalizedResolved, new Set());
+                    }
+                    this.reverseDeps.get(normalizedResolved).add(normalizedFrom);
+                }
+            }
+        }
+        catch (error) {
+            console.error(`[DependencyAnalyzer] Error rebuilding index for ${filePath}:`, error);
+        }
+    }
+    /**
      * Build reverse import graph by scanning all TypeScript files in the project
      */
     async buildReverseImportGraph(projectRoot) {
@@ -68,9 +146,9 @@ class DependencyAnalyzer {
                 for (const imp of imports) {
                     const resolved = this.resolveImport(imp.specifier, filePath, projectRoot);
                     if (resolved) {
-                        // Use path.resolve() directly (no normalize needed)
-                        const normalizedResolved = path.resolve(resolved);
-                        const normalizedFrom = path.resolve(imp.from);
+                        // Normalize paths consistently (realpath/case/slashes) for matching
+                        const normalizedResolved = this.normalizePath(resolved);
+                        const normalizedFrom = this.normalizePath(imp.from);
                         if (!this.reverseDeps.has(normalizedResolved)) {
                             this.reverseDeps.set(normalizedResolved, new Set());
                         }
@@ -99,15 +177,21 @@ class DependencyAnalyzer {
     }
     /**
      * Parse import statements from file content
+     * Supports: import, import type, export type, dynamic import(), require()
      */
     parseImports(content, filePath, projectRoot) {
         const imports = [];
-        // Match: import ... from 'module' or import ... from "module"
-        // Also: import('module') or require('module')
+        // Match patterns:
+        // - import ... from 'module'
+        // - import type ... from 'module'
+        // - export type ... from 'module'
+        // - export { type ... } from 'module'
+        // - import('module') or require('module')
         const importPatterns = [
-            /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g,
+            /(?:import|export)\s+(?:type\s+)?.*?\s+from\s+['"]([^'"]+)['"]/g,
+            /export\s+\{\s*(?:type\s+)?[^}]*\}\s+from\s+['"]([^'"]+)['"]/g,
             /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-            /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+            /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g, // require()
         ];
         for (const pattern of importPatterns) {
             let match;
@@ -138,27 +222,27 @@ class DependencyAnalyzer {
         }
         const fromDir = path.dirname(fromFile);
         const base = path.resolve(fromDir, specifier);
-        // Try files with various extensions
+        // Try files with various extensions (order matters: .ts/.tsx before .d.ts, .d.ts before .js)
         const tryFiles = (p) => [
             p,
             `${p}.ts`,
             `${p}.tsx`,
+            `${p}.d.ts`,
             `${p}.js`,
             `${p}.jsx`,
-            `${p}.d.ts`,
         ];
         // 1) Check if it's a file (with or without extension)
         for (const p of tryFiles(base)) {
             if (fs.existsSync(p) && fs.statSync(p).isFile()) {
-                return path.resolve(p);
+                return this.normalizePath(p);
             }
         }
-        // 2) Check if it's a directory -> try index.*
+        // 2) Check if it's a directory -> try index.* (order: .ts/.tsx before .d.ts, .d.ts before .js)
         if (fs.existsSync(base) && fs.statSync(base).isDirectory()) {
-            for (const idx of ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.d.ts']) {
+            for (const idx of ['index.ts', 'index.tsx', 'index.d.ts', 'index.js', 'index.jsx']) {
                 const p = path.join(base, idx);
                 if (fs.existsSync(p) && fs.statSync(p).isFile()) {
-                    return path.resolve(p);
+                    return this.normalizePath(p);
                 }
             }
         }
@@ -376,7 +460,7 @@ class DependencyAnalyzer {
     }
     isSourceFile(fileName) {
         const ext = path.extname(fileName).toLowerCase();
-        return ['.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.cs', '.go', '.rs'].includes(ext);
+        return ['.js', '.jsx', '.ts', '.tsx', '.d.ts', '.py', '.java', '.cs', '.go', '.rs'].includes(ext);
     }
     shouldSkipDirectory(dirName) {
         const skipDirs = [
@@ -388,4 +472,5 @@ class DependencyAnalyzer {
     }
 }
 exports.DependencyAnalyzer = DependencyAnalyzer;
+DependencyAnalyzer.instance = null;
 //# sourceMappingURL=DependencyAnalyzer.js.map

@@ -93,6 +93,8 @@ export interface TypeProperty {
     type: string;
     optional?: boolean;
     readonly?: boolean;
+    /** Method signature (for callable properties/methods) */
+    methodSignature?: FunctionSignature;
 }
 
 export interface IndexSignature {
@@ -154,8 +156,12 @@ export interface ApiSnapshot {
     failedShapes?: number;
     /** List of export names/identities that failed to build */
     failedShapeNames?: string[];
-    /** Whether this snapshot is partial (has failures) */
+    /** Whether this snapshot is partial (has failures or no type information) */
     partial?: boolean;
+    /** Module system detected (for JS files) */
+    moduleSystem?: 'cjs' | 'esm' | 'mixed' | 'unknown';
+    /** Analysis mode label (e.g., "Typed JS (TS checker)" or "Module-surface") */
+    analysisMode?: string;
 }
 
 /**

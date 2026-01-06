@@ -61,6 +61,54 @@
       "description": "Many changed-in-place APIs"
     },
     {
+      "id": "redux-toolkit-v1-to-v2",
+      "url": "https://github.com/reduxjs/redux-toolkit.git",
+      "beforeRef": "v1.9.7",
+      "afterRef": "v2.0.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "packages/toolkit/src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Major version upgrade with breaking changes"
+    },
+    {
+      "id": "trpc-server-v10-to-v11",
+      "url": "https://github.com/trpc/trpc.git",
+      "beforeRef": "v10.45.2",
+      "afterRef": "v11.8.1",
+      "mode": "api-snapshot",
+      "paths": [
+        "packages/server/src/index.ts"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Major version upgrade with API changes"
+    },
+    {
+      "id": "chalk-v4-to-v5",
+      "url": "https://github.com/chalk/chalk.git",
+      "beforeRef": "v4.1.2",
+      "afterRef": "v5.3.0",
+      "mode": "api-snapshot",
+      "paths": [
+        "source/index.js"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "Pure ESM break (v4 is CJS, v5 is ESM)"
+    },
+    {
+      "id": "lodash-4.17-to-4.18",
+      "url": "https://github.com/lodash/lodash.git",
+      "beforeRef": "4.17.21",
+      "afterRef": "4.17.22",
+      "mode": "api-snapshot",
+      "paths": [
+        "index.js"
+      ],
+      "tsconfig": "tsconfig.json",
+      "description": "CJS behavior test - patch version (4.18.0 doesn't exist yet)"
+    },
+    {
       "id": "lodash-es-4.17-to-4.18",
       "url": "https://github.com/lodash/lodash.git",
       "beforeRef": "4.17.21",
@@ -83,8 +131,7 @@
         "index.d.ts"
       ],
       "tsconfig": "tsconfig.json",
-      "description": "Class-based with middleware, default export",
-      "skip": true
+      "description": "CJS behavior test - minor version change"
     }
   ]
 }
