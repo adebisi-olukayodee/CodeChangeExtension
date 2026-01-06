@@ -822,7 +822,8 @@ class TypeScriptAnalyzer {
             name: p.getName(),
             type: p.getTypeNode()?.getText() || 'any',
             optional: p.hasQuestionToken(),
-            defaultValue: p.getInitializer()?.getText()
+            defaultValue: p.getInitializer()?.getText(),
+            rest: p.isRestParameter() || undefined // Include rest parameter flag
         }));
     }
     getArrowFunctionParameters(arrowFunc) {
@@ -917,10 +918,14 @@ class TypeScriptAnalyzer {
             for (const varDecl of variableDeclarations) {
                 const initializer = varDecl.getInitializer();
                 if (initializer) {
+                    // Check if it's an arrow function using Node type check
+                    const isArrowFunction = initializer.getKind() === 222; // SyntaxKind.ArrowFunction = 222
                     const initializerText = initializer.getText();
-                    if (initializerText.includes('=>')) {
+                    if (isArrowFunction || initializerText.includes('=>')) {
                         console.log(`[TypeScriptAnalyzer]   - Arrow function: ${varDecl.getName()} at line ${varDecl.getStartLineNumber()}`);
+                        console.log(`[TypeScriptAnalyzer]     Initializer kind: ${initializer.getKind()}, isArrowFunction: ${isArrowFunction}`);
                         const symbolInfo = this.createArrowFunctionSymbolInfo(varDecl, initializer);
+                        console.log(`[TypeScriptAnalyzer]     Extracted parameters: ${JSON.stringify(symbolInfo.parameters)}`);
                         functions.push(symbolInfo);
                     }
                 }
@@ -1492,8 +1497,15 @@ class TypeScriptAnalyzer {
                 }
                 // For functions, check parameter changes in detail
                 if (kind === 'function' || kind === 'method') {
+                    // Debug logging
+                    console.log(`[TypeScriptAnalyzer] Comparing function ${beforeSymbol.name}:`);
+                    console.log(`[TypeScriptAnalyzer]   Before signature: ${beforeSymbol.signature}`);
+                    console.log(`[TypeScriptAnalyzer]   After signature: ${afterSymbol.signature}`);
+                    console.log(`[TypeScriptAnalyzer]   Before parameters: ${JSON.stringify(beforeSymbol.parameters)}`);
+                    console.log(`[TypeScriptAnalyzer]   After parameters: ${JSON.stringify(afterSymbol.parameters)}`);
                     const paramChange = this.detectParameterBreakingChange(beforeSymbol, afterSymbol);
                     if (paramChange) {
+                        console.log(`[TypeScriptAnalyzer]   ✅ Parameter change detected: ${paramChange.message}`);
                         const change = {
                             symbol: afterSymbol,
                             changeType: paramChange.changeType,
@@ -1509,6 +1521,9 @@ class TypeScriptAnalyzer {
                         modified.push(change);
                         changedSymbols.push(change);
                         continue;
+                    }
+                    else {
+                        console.log(`[TypeScriptAnalyzer]   ❌ No parameter change detected`);
                     }
                 }
                 // For classes, check method changes
@@ -1629,11 +1644,61 @@ class TypeScriptAnalyzer {
         }
     }
     /**
-     * Detect specific parameter-level breaking changes (optional -> required, removed, type changed)
+     * Detect specific parameter-level breaking changes (optional -> required, removed, type changed, parameter count, rest parameter)
      */
     detectParameterBreakingChange(before, after) {
         if (!before.parameters || !after.parameters) {
+            // If one has parameters and the other doesn't, that's a breaking change
+            if (before.parameters && before.parameters.length > 0 && (!after.parameters || after.parameters.length === 0)) {
+                return {
+                    changeType: 'signature-changed',
+                    isBreaking: true,
+                    ruleId: 'TSAPI-FN-002',
+                    message: `All parameters were removed (function now takes no parameters)`
+                };
+            }
+            if ((!before.parameters || before.parameters.length === 0) && after.parameters && after.parameters.length > 0) {
+                return {
+                    changeType: 'signature-changed',
+                    isBreaking: true,
+                    ruleId: 'TSAPI-FN-002',
+                    message: `Parameters were added (function now requires parameters)`
+                };
+            }
             return null;
+        }
+        // Check for parameter count changes (variadic to fixed or vice versa)
+        const beforeParamCount = before.parameters.length;
+        const afterParamCount = after.parameters.length;
+        // Check for rest parameter changes
+        const beforeHasRest = before.parameters.some(p => p.rest === true);
+        const afterHasRest = after.parameters.some(p => p.rest === true);
+        // If rest parameter was removed, that's a breaking change
+        if (beforeHasRest && !afterHasRest) {
+            return {
+                changeType: 'signature-changed',
+                isBreaking: true,
+                ruleId: 'TSAPI-FN-005',
+                message: `Rest parameter was removed (function no longer accepts variadic arguments)`
+            };
+        }
+        // If rest parameter was added, that's usually non-breaking, but if parameter count decreased, it might be breaking
+        if (!beforeHasRest && afterHasRest && beforeParamCount > afterParamCount) {
+            return {
+                changeType: 'signature-changed',
+                isBreaking: true,
+                ruleId: 'TSAPI-FN-006',
+                message: `Fixed parameters were replaced with rest parameter (parameter count changed from ${beforeParamCount} to variadic)`
+            };
+        }
+        // If parameter count changed and no rest parameter, that's a breaking change
+        if (beforeParamCount !== afterParamCount && !beforeHasRest && !afterHasRest) {
+            return {
+                changeType: 'signature-changed',
+                isBreaking: true,
+                ruleId: 'TSAPI-FN-002',
+                message: `Parameter count changed from ${beforeParamCount} to ${afterParamCount}`
+            };
         }
         const beforeParams = new Map(before.parameters.map(p => [p.name, p]));
         const afterParams = new Map(after.parameters.map(p => [p.name, p]));
@@ -1648,7 +1713,7 @@ class TypeScriptAnalyzer {
                 };
             }
         }
-        // Check for parameter changes (optional -> required, type changed)
+        // Check for parameter changes (optional -> required, type changed, rest parameter changed)
         for (const [paramName, afterParam] of afterParams) {
             const beforeParam = beforeParams.get(paramName);
             if (beforeParam) {
@@ -1659,6 +1724,17 @@ class TypeScriptAnalyzer {
                         isBreaking: true,
                         ruleId: 'TSAPI-FN-001',
                         message: `Parameter '${paramName}' changed from optional to required`
+                    };
+                }
+                // Rest parameter changed
+                const beforeIsRest = beforeParam.rest === true;
+                const afterIsRest = afterParam.rest === true;
+                if (beforeIsRest !== afterIsRest) {
+                    return {
+                        changeType: 'signature-changed',
+                        isBreaking: true,
+                        ruleId: 'TSAPI-FN-005',
+                        message: `Parameter '${paramName}' ${beforeIsRest ? 'lost' : 'gained'} rest parameter modifier`
                     };
                 }
                 // Type changed
@@ -2048,7 +2124,8 @@ class TypeScriptAnalyzer {
             name: p.name,
             type: p.type,
             optional: p.optional,
-            defaultValue: p.defaultValue
+            defaultValue: p.defaultValue,
+            rest: p.rest || undefined
         }));
         // Check if exported (only FunctionDeclaration has isExported)
         const isExported = func instanceof ts_morph_1.FunctionDeclaration ? func.isExported() : false;
@@ -2107,14 +2184,114 @@ class TypeScriptAnalyzer {
     }
     createArrowFunctionSymbolInfo(varDecl, initializer) {
         const name = varDecl.getName();
+        // Try to extract parameters from the arrow function
+        let parameters = [];
+        let signature = `${name}()`;
+        let returnType = 'any';
+        // Check if initializer is an ArrowFunction node
+        if (initializer) {
+            try {
+                // Try multiple ways to get parameters
+                let arrowParams = [];
+                // Method 1: Direct getParameters() call (for ArrowFunction nodes)
+                if (typeof initializer.getParameters === 'function') {
+                    arrowParams = initializer.getParameters();
+                }
+                // Method 2: Try to get from compiler node
+                else if (initializer.compilerNode) {
+                    const tsApi = this.getTsApi();
+                    if (tsApi.isArrowFunction(initializer.compilerNode)) {
+                        arrowParams = Array.from(initializer.compilerNode.parameters || []);
+                    }
+                }
+                if (arrowParams.length > 0) {
+                    // If we got raw TypeScript nodes, we need to wrap them or extract differently
+                    if (arrowParams[0] && typeof arrowParams[0].getKind === 'function') {
+                        // These are ts-morph nodes
+                        parameters = arrowParams.map((p) => {
+                            const paramName = p.getName();
+                            const paramType = p.getTypeNode()?.getText() || 'any';
+                            const isOptional = p.hasQuestionToken();
+                            const isRest = p.isRestParameter() || p.getDotDotDotToken() !== undefined;
+                            const defaultValue = p.getInitializer()?.getText();
+                            return {
+                                name: paramName,
+                                type: paramType,
+                                optional: isOptional,
+                                defaultValue,
+                                rest: isRest || undefined
+                            };
+                        });
+                    }
+                    else if (arrowParams[0] && arrowParams[0].name) {
+                        // These are raw TypeScript nodes - extract from compiler node
+                        const tsApi = this.getTsApi();
+                        parameters = arrowParams.map((p) => {
+                            const paramName = tsApi.isIdentifier(p.name) ? p.name.text : 'param';
+                            const paramType = p.type ? this.checker?.typeToString(this.checker.getTypeFromTypeNode(p.type)) || 'any' : 'any';
+                            const isOptional = !!p.questionToken;
+                            const isRest = !!p.dotDotDotToken;
+                            const defaultValue = p.initializer ? p.initializer.getText() : undefined;
+                            return {
+                                name: paramName,
+                                type: paramType,
+                                optional: isOptional,
+                                defaultValue,
+                                rest: isRest || undefined
+                            };
+                        });
+                    }
+                    // Build signature string
+                    const paramStr = parameters.map(p => {
+                        let param = p.name;
+                        if (p.rest)
+                            param = `...${param}`;
+                        if (p.optional)
+                            param += '?';
+                        param += `: ${p.type}`;
+                        if (p.defaultValue)
+                            param += ` = ${p.defaultValue}`;
+                        return param;
+                    }).join(', ');
+                    signature = `${name}(${paramStr})`;
+                }
+                // Try to get return type
+                if (typeof initializer.getReturnTypeNode === 'function') {
+                    const returnTypeNode = initializer.getReturnTypeNode();
+                    if (returnTypeNode) {
+                        returnType = returnTypeNode.getText();
+                    }
+                }
+                // Try to infer from the type checker if available and return type not found
+                if (returnType === 'any' && this.checker && varDecl.compilerNode) {
+                    try {
+                        const symbol = this.checker.getSymbolAtLocation(varDecl.compilerNode);
+                        if (symbol) {
+                            const type = this.checker.getTypeOfSymbolAtLocation(symbol, varDecl.compilerNode);
+                            const callSignatures = type.getCallSignatures();
+                            if (callSignatures.length > 0) {
+                                const returnTypeFromChecker = this.checker.typeToString(callSignatures[0].getReturnType());
+                                returnType = returnTypeFromChecker;
+                            }
+                        }
+                    }
+                    catch (error) {
+                        // Fallback to 'any'
+                    }
+                }
+            }
+            catch (error) {
+                console.warn(`[TypeScriptAnalyzer] Failed to extract parameters from arrow function ${name}:`, error);
+            }
+        }
         return {
             name,
             qualifiedName: name,
             line: varDecl.getStartLineNumber(),
             column: varDecl.getStartLineNumber(true),
-            signature: `${name}()`,
-            returnType: 'any',
-            parameters: [],
+            signature,
+            returnType,
+            parameters,
             isExported: varDecl.getVariableStatement()?.isExported() || false,
             kind: 'function',
             metadata: {
@@ -3755,6 +3932,7 @@ class TypeScriptAnalyzer {
     }
     /**
      * Builds a variable API shape.
+     * If the variable has a function type (arrow function), extracts the function signature.
      */
     buildVariableApiShape(symbol, decl) {
         if (!this.checker)
@@ -3764,6 +3942,64 @@ class TypeScriptAnalyzer {
         const type = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
         const typeText = this.checker.typeToString(type);
         const isConst = !!(decl.modifiers && decl.modifiers.some(m => m.kind === tsApi.SyntaxKind.ConstKeyword));
+        // Check if this variable has a function type (arrow function)
+        // If it has call signatures, treat it as a function
+        const callSignatures = type.getCallSignatures();
+        if (callSignatures.length > 0) {
+            // This is a function type - build function API shape instead
+            const overloads = [];
+            for (const sig of callSignatures) {
+                const params = [];
+                for (let i = 0; i < sig.parameters.length; i++) {
+                    const param = sig.parameters[i];
+                    const paramType = this.checker.getTypeOfSymbolAtLocation(param, decl);
+                    const paramName = param.getName();
+                    // Try to get parameter declaration from the variable's initializer
+                    let paramDecl;
+                    let isOptional = false;
+                    let isRest = false;
+                    // Check if the declaration is a variable declaration with an arrow function initializer
+                    if (tsApi.isVariableDeclaration(decl) && decl.initializer) {
+                        if (tsApi.isArrowFunction(decl.initializer) || tsApi.isFunctionExpression(decl.initializer)) {
+                            const funcExpr = decl.initializer;
+                            if (funcExpr.parameters && i < funcExpr.parameters.length) {
+                                paramDecl = funcExpr.parameters[i];
+                                isOptional = !!paramDecl.questionToken;
+                                isRest = !!paramDecl.dotDotDotToken;
+                            }
+                        }
+                    }
+                    // Fallback: try to get from parameter symbol's declarations
+                    if (!paramDecl) {
+                        paramDecl = param.getDeclarations()?.find((d) => tsApi.isParameter(d));
+                        if (paramDecl) {
+                            isOptional = !!paramDecl.questionToken;
+                            isRest = !!paramDecl.dotDotDotToken;
+                        }
+                    }
+                    // Normalize type string
+                    const typeString = this.normalizeTypeString(this.checker.typeToString(paramType));
+                    params.push({
+                        name: paramName || `param${i}`,
+                        type: typeString,
+                        optional: isOptional,
+                        rest: isRest
+                    });
+                }
+                // Normalize return type
+                const returnType = this.normalizeTypeString(this.checker.typeToString(sig.getReturnType()));
+                overloads.push({
+                    parameters: params,
+                    returnType
+                });
+            }
+            return {
+                kind: 'function',
+                name,
+                overloads
+            };
+        }
+        // Not a function type - return variable shape
         return {
             kind: isConst ? 'const' : 'variable',
             name,

@@ -90,6 +90,7 @@ export interface ParameterInfo {
     type: string;
     optional: boolean;
     defaultValue?: string;
+    rest?: boolean;
 }
 
 export interface ExportInfo {
