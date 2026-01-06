@@ -51,26 +51,6 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
     
     // Caching for performance
     private moduleResolutionCache = new Map<string, string | null>(); // moduleSpecifier+fromFile -> resolvedPath
-    
-    /**
-     * Normalize resolved path consistently (realpath/case/slashes) for matching
-     * This ensures resolvedPath === analyzedFilePath matches correctly
-     */
-    private normalizeResolvedPath(filePath: string): string {
-        try {
-            // Use realpath to resolve symlinks and get canonical path
-            const realPath = fs.realpathSync.native(filePath);
-            // Normalize separators (always use forward slashes for consistency)
-            const normalized = path.normalize(realPath).replace(/\\/g, '/');
-            // On Windows, normalize case (toLowerCase) for case-insensitive matching
-            // On Unix, keep case as-is
-            return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-        } catch (error) {
-            // If realpath fails (file doesn't exist), fall back to basic normalization
-            const normalized = path.normalize(filePath).replace(/\\/g, '/');
-            return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-        }
-    }
     private symbolExportsCache = new Map<string, string[]>(); // resolvedPath -> exports[]
     private apiShapeCache = new Map<string, ApiShape | null>(); // exportIdentity -> ApiShape
 
@@ -625,10 +605,9 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             ).resolvedModule?.resolvedFileName;
             
             if (resolved && fs.existsSync(resolved)) {
-                const normalized = this.normalizeResolvedPath(resolved);
-                this.moduleResolutionCache.set(cacheKey, normalized);
+                this.moduleResolutionCache.set(cacheKey, resolved);
                 // Only log on successful resolution (cache miss)
-                return normalized;
+                return resolved;
             }
         } catch (error) {
             // Fall back to manual resolution
@@ -669,22 +648,20 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             
             // Check if file exists
             if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
-                const normalized = this.normalizeResolvedPath(resolved);
-                this.moduleResolutionCache.set(cacheKey, normalized);
-                console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${normalized} (manual)`);
-                return normalized;
+                this.moduleResolutionCache.set(cacheKey, resolved);
+                console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${resolved} (manual)`);
+                return resolved;
             }
             
-            // Also check if it's a directory with an index file (order: .ts/.tsx before .d.ts)
+            // Also check if it's a directory with an index file
             if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
                 const indexFiles = ['index.ts', 'index.tsx', 'index.d.ts'];
                 for (const indexFile of indexFiles) {
                     const indexPath = path.join(resolved, indexFile);
                     if (fs.existsSync(indexPath)) {
-                        const normalized = this.normalizeResolvedPath(indexPath);
-                        this.moduleResolutionCache.set(cacheKey, normalized);
-                        console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${normalized} (directory index)`);
-                        return normalized;
+                        this.moduleResolutionCache.set(cacheKey, indexPath);
+                        console.log(`[TypeScriptAnalyzer] Resolved '${moduleSpecifier}' to ${indexPath} (directory index)`);
+                        return indexPath;
                     }
                 }
             }

@@ -104,9 +104,7 @@ export async function analyzeImpactWithDiff(
     
     const languageAnalyzer = LanguageAnalyzerFactory.getAnalyzer(fullFilePath);
     
-    // Use a shared DependencyAnalyzer instance to maintain index across calls
-    // This allows incremental updates when files are created/renamed/saved
-    const dependencyAnalyzer = DependencyAnalyzer.getInstance();
+    const dependencyAnalyzer = new DependencyAnalyzer();
     const testFinder = new TestFinder();
 
     let changedFunctions: string[] = [];

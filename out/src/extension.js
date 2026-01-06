@@ -36,7 +36,6 @@ const KeyboardNavigationManager_1 = require("./ui/KeyboardNavigationManager");
 const InlineDecorationsManager_1 = require("./ui/InlineDecorationsManager");
 const ImpactSummaryFormatter_1 = require("./utils/ImpactSummaryFormatter");
 const ConfidenceMetricsExplainer_1 = require("./utils/ConfidenceMetricsExplainer");
-const DependencyAnalyzer_1 = require("./analyzers/DependencyAnalyzer");
 /**
  * Extract breaking issues from analysis result
  * Focuses on impact analysis: what code depends on changes and could break
@@ -220,12 +219,6 @@ function activate(context) {
         if (autoAnalysisEnabled) {
             console.log('[Impact Analyzer] Auto-analysis on save is ENABLED');
             const saveDisposable = vscode.workspace.onDidSaveTextDocument(async (document) => {
-                // Rebuild dependency index on save
-                const dependencyAnalyzer = DependencyAnalyzer_1.DependencyAnalyzer.getInstance();
-                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-                if (document.uri.scheme === 'file' && workspaceFolder) {
-                    await dependencyAnalyzer.rebuildFileIndex(document.uri.fsPath, workspaceFolder.uri.fsPath);
-                }
                 const fileExt = require('path').extname(document.fileName).toLowerCase();
                 if (supportedExtensions.includes(fileExt)) {
                     console.log(`[Impact Analyzer] Auto-analyzing on save: ${document.fileName}`);

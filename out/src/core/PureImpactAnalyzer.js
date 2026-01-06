@@ -83,9 +83,7 @@ async function analyzeImpactWithDiff(params, debugLog) {
     const fileExt = path.extname(fullFilePath).toLowerCase();
     log(`File extension: ${fileExt}`);
     const languageAnalyzer = LanguageAnalyzerFactory_1.LanguageAnalyzerFactory.getAnalyzer(fullFilePath);
-    // Use a shared DependencyAnalyzer instance to maintain index across calls
-    // This allows incremental updates when files are created/renamed/saved
-    const dependencyAnalyzer = DependencyAnalyzer_1.DependencyAnalyzer.getInstance();
+    const dependencyAnalyzer = new DependencyAnalyzer_1.DependencyAnalyzer();
     const testFinder = new TestFinder_1.TestFinder();
     let changedFunctions = [];
     let changedClasses = [];
