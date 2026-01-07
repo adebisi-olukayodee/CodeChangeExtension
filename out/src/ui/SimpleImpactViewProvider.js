@@ -184,15 +184,15 @@ class SimpleImpactViewProvider {
             functionsItem.iconPath = new vscode.ThemeIcon('symbol-function');
             items.push(functionsItem);
         }
-        // Impacted Tests
+        // Tests
         if (result.affectedTests && result.affectedTests.length > 0) {
-            const testsItem = new ImpactViewItem(`Impacted Tests (${result.affectedTests.length})`, 'tests', vscode.TreeItemCollapsibleState.Collapsed);
+            const testsItem = new ImpactViewItem(`Tests (${result.affectedTests.length})`, 'tests', vscode.TreeItemCollapsibleState.Collapsed);
             testsItem.analysisResult = result;
             testsItem.iconPath = new vscode.ThemeIcon('beaker');
             items.push(testsItem);
         }
         else {
-            const noTestsItem = new ImpactViewItem('✅ No Impacted Tests Detected', 'no-impacted-tests', vscode.TreeItemCollapsibleState.None);
+            const noTestsItem = new ImpactViewItem('✅ No Tests Detected', 'no-impacted-tests', vscode.TreeItemCollapsibleState.None);
             noTestsItem.iconPath = new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
             noTestsItem.description = 'No tests found to be affected by this change.';
             noTestsItem.tooltip = 'This means your changes do not affect any existing tests, or the test discovery could not find any relevant tests.';

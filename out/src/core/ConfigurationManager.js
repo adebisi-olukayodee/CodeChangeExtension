@@ -120,6 +120,12 @@ class ConfigurationManager {
     getPrTargetBranch() {
         return this.get('prTargetBranch', 'origin/main');
     }
+    /**
+     * Check if debug mode is enabled
+     */
+    isDebugModeEnabled() {
+        return this.get('debugMode', false);
+    }
 }
 exports.ConfigurationManager = ConfigurationManager;
 //# sourceMappingURL=ConfigurationManager.js.map

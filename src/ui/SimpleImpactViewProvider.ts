@@ -245,10 +245,10 @@ export class SimpleImpactViewProvider implements vscode.TreeDataProvider<ImpactV
             items.push(functionsItem);
         }
 
-        // Impacted Tests
+        // Tests
         if (result.affectedTests && result.affectedTests.length > 0) {
             const testsItem = new ImpactViewItem(
-                `Impacted Tests (${result.affectedTests.length})`,
+                `Tests (${result.affectedTests.length})`,
                 'tests',
                 vscode.TreeItemCollapsibleState.Collapsed
             );
@@ -257,7 +257,7 @@ export class SimpleImpactViewProvider implements vscode.TreeDataProvider<ImpactV
             items.push(testsItem);
         } else {
             const noTestsItem = new ImpactViewItem(
-                '✅ No Impacted Tests Detected',
+                '✅ No Tests Detected',
                 'no-impacted-tests',
                 vscode.TreeItemCollapsibleState.None
             );

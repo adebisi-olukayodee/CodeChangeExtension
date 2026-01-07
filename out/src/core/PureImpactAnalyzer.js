@@ -311,8 +311,10 @@ async function analyzeImpactWithDiff(params, debugLog) {
         log(`Error finding tests that import source: ${error}`);
     }
     // Strategy 3: Try TestFinder for additional tests that import the file (TS type references, etc.)
+    // Pass changed symbols for symbol-aware filtering
     try {
-        const testFinderResults = await testFinder.findAffectedTests(fullFilePath, changedCodeAnalysis);
+        const changedSymbols = Array.from(impactedExportNames);
+        const testFinderResults = await testFinder.findAffectedTests(fullFilePath, changedCodeAnalysis, changedSymbols.length > 0 ? changedSymbols : undefined);
         // Only include tests from TestFinder if they have proven imports
         // TestFinder's filterRelevantTests already checks for imports, so include those
         for (const testFile of testFinderResults) {

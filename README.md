@@ -70,9 +70,12 @@ Located in the Explorer sidebar, shows:
   "impactAnalyzer.maxAnalysisTime": 10000,
   "impactAnalyzer.cacheEnabled": true,
   "impactAnalyzer.gitIntegration": true,
-  "impactAnalyzer.preCommitHooks": false
+  "impactAnalyzer.preCommitHooks": false,
+  "impactAnalyzer.debugMode": false
 }
 ```
+
+**Debug Mode**: Set `impactAnalyzer.debugMode` to `true` to enable verbose logging. This shows detailed analysis information in the output channels and developer console, useful for troubleshooting analysis issues.
 
 ### Test Framework Support
 - **JavaScript/TypeScript**: Jest, Mocha, Vitest, Cypress, Playwright
@@ -146,9 +149,11 @@ Located in the Explorer sidebar, shows:
 4. **Git integration issues** - Ensure you're in a git repository
 
 ### Debug Mode
-1. Open Developer Tools (`Help > Toggle Developer Tools`)
-2. Check Console for error messages
-3. Look for "Impact Analyzer" prefixed logs
+1. Enable debug logging in settings: `"impactAnalyzer.debugMode": true`
+2. Open Developer Tools (`Help > Toggle Developer Tools`)
+3. Check Console for detailed analysis logs
+4. Look for "Impact Analyzer" or "[DependencyAnalyzer]" prefixed logs
+5. Check Output channels: `View > Output` and select "Impact Analyzer" or related channels
 
 ## 🤝 Contributing
 
@@ -213,16 +218,17 @@ The extension detects the following breaking changes in TypeScript/JavaScript:
 - ❌ **100% coverage** - May miss some edge cases in complex codebases
 - ❌ **Runtime correctness** - Only analyzes types/signatures, not behavior
 - ❌ **External consumers** - Only analyzes workspace-local code
-- ❌ **JavaScript accuracy** - Weaker guarantees for `.js` files (no type information)
+- ❌ **JavaScript breaking change detection** - Not available for `.js` files (no type information)
 - ❌ **Test impact certainty** - Test discovery uses heuristics, not guaranteed
 
 ### JavaScript Files
-JavaScript files are supported but with **weaker guarantees**:
-- No type information available for accurate signature analysis
-- Dependency detection relies on import patterns, not type checking
-- Breaking change detection is less reliable than TypeScript
+JavaScript files have **limited support**:
+- Basic structural analysis is performed (function/class detection)
+- **Breaking change detection is not available** - JavaScript lacks type information needed for accurate API change detection
+- Dependency detection uses import patterns and heuristics, not type checking
+- Symbol reference finding returns empty results (limitation of JS analysis)
 
-**Recommendation**: Use TypeScript (`.ts`/`.tsx`) files for best accuracy.
+**Recommendation**: Use TypeScript (`.ts`/`.tsx`) files for full analysis capabilities. The extension works best with TypeScript projects.
 
 ## 🆘 Support
 

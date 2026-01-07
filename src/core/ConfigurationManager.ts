@@ -121,4 +121,11 @@ export class ConfigurationManager {
     getPrTargetBranch(): string {
         return this.get('prTargetBranch', 'origin/main');
     }
+
+    /**
+     * Check if debug mode is enabled
+     */
+    isDebugModeEnabled(): boolean {
+        return this.get('debugMode', false);
+    }
 }

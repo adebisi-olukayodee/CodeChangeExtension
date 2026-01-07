@@ -203,6 +203,11 @@
           "default": 10000,
           "description": "Maximum time in milliseconds to spend on analysis"
         },
+        "impactAnalyzer.debugMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose debug logging. When enabled, detailed analysis logs will be shown in the output channels and developer console."
+        },
         "impactAnalyzer.cacheEnabled": {
           "type": "boolean",
           "default": true,

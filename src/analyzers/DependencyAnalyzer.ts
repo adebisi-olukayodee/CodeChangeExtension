@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { CodeAnalysisResult } from './CodeAnalyzer';
+import { debugLog } from '../utils/Logger';
 
 interface ImportInfo {
     from: string; // File that imports
@@ -29,7 +30,7 @@ export class DependencyAnalyzer {
      * Build reverse import graph by scanning all TypeScript files in the project
      */
     async buildReverseImportGraph(projectRoot: string): Promise<void> {
-        console.log(`[DependencyAnalyzer] Building reverse import graph from: ${projectRoot}`);
+        debugLog(`[DependencyAnalyzer] Building reverse import graph from: ${projectRoot}`);
         this.reverseDeps.clear();
         this.exportGraph.clear();
         
@@ -71,7 +72,7 @@ export class DependencyAnalyzer {
         };
         
         collectFiles(projectRoot);
-        console.log(`[DependencyAnalyzer] Found ${allTsFiles.length} TypeScript files`);
+        debugLog(`[DependencyAnalyzer] Found ${allTsFiles.length} TypeScript files`);
         if (fileCountExceeded) {
             console.warn(`[DependencyAnalyzer] ⚠️ File count limit reached (${this.MAX_FILES_TO_ANALYZE}). Analysis may be incomplete for very large repositories.`);
         }
@@ -120,7 +121,7 @@ export class DependencyAnalyzer {
                         
                         const fromRel = path.relative(projectRoot, normalizedFrom);
                         const toRel = path.relative(projectRoot, normalizedResolved);
-                        console.log(`[DependencyAnalyzer]   ${fromRel} imports ${toRel} (from '${imp.specifier}')`);
+                        debugLog(`[DependencyAnalyzer]   ${fromRel} imports ${toRel} (from '${imp.specifier}')`);
                     }
                 }
                 
@@ -133,11 +134,11 @@ export class DependencyAnalyzer {
             }
         }
         
-        console.log(`[DependencyAnalyzer] Reverse graph built: ${this.reverseDeps.size} files have importers`);
-        console.log(`[DependencyAnalyzer] Export graph built: ${this.exportGraph.size} modules have exports tracked`);
+        debugLog(`[DependencyAnalyzer] Reverse graph built: ${this.reverseDeps.size} files have importers`);
+        debugLog(`[DependencyAnalyzer] Export graph built: ${this.exportGraph.size} modules have exports tracked`);
         if (this.reverseDeps.size > 0) {
             const sampleKeys = Array.from(this.reverseDeps.keys()).slice(0, 3);
-            console.log(`[DependencyAnalyzer] Sample targets: ${sampleKeys.map(k => path.relative(projectRoot, k)).join(', ')}`);
+            debugLog(`[DependencyAnalyzer] Sample targets: ${sampleKeys.map(k => path.relative(projectRoot, k)).join(', ')}`);
         }
     }
     
@@ -526,39 +527,39 @@ export class DependencyAnalyzer {
             return legacyResults.map(filePath => ({ filePath, lines: [] }));
         }
         
-        console.log(`[DependencyAnalyzer] Finding downstream components for: ${sourceFilePath}`);
-        console.log(`[DependencyAnalyzer] Project root: ${projectRoot}`);
-        console.log(`[DependencyAnalyzer] Impacted symbols: ${JSON.stringify(impactedSymbols)}`);
+        debugLog(`[DependencyAnalyzer] Finding downstream components for: ${sourceFilePath}`);
+        debugLog(`[DependencyAnalyzer] Project root: ${projectRoot}`);
+        debugLog(`[DependencyAnalyzer] Impacted symbols: ${JSON.stringify(impactedSymbols)}`);
         
         // Normalize source file path for comparison - use consistent format
         const normalizedSource = path.resolve(sourceFilePath).replace(/\\/g, '/');
         
         // Build reverse import graph and export graph first (needed for both approaches)
         if (this.reverseDeps.size === 0 || this.exportGraph.size === 0) {
-            console.log(`[DependencyAnalyzer] Building import/export graphs...`);
+            debugLog(`[DependencyAnalyzer] Building import/export graphs...`);
             await this.buildReverseImportGraph(projectRoot);
         }
         
         // Try direct file scanning first (more reliable than graph)
         const directScanResults = await this.findDownstreamByDirectScan(normalizedSource, projectRoot, impactedSymbols);
         if (directScanResults.length > 0) {
-            console.log(`[DependencyAnalyzer] Direct scan found ${directScanResults.length} downstream files`);
+            debugLog(`[DependencyAnalyzer] Direct scan found ${directScanResults.length} downstream files`);
             return directScanResults;
         }
         
         // Fallback to graph-based approach
-        console.log(`[DependencyAnalyzer] Direct scan found 0 files, trying graph-based approach...`);
+        debugLog(`[DependencyAnalyzer] Direct scan found 0 files, trying graph-based approach...`);
         
         // If graph was built from /after but caller gave /before, map it
         let graphKey = normalizedSource;
         if (projectRoot && normalizedSource.includes(`${path.sep}before${path.sep}`) && projectRoot.includes(`${path.sep}after${path.sep}`)) {
             graphKey = normalizedSource.replace(`${path.sep}before${path.sep}`, `${path.sep}after${path.sep}`);
-            console.log(`[DependencyAnalyzer] Mapped before path to after path for graph lookup`);
+            debugLog(`[DependencyAnalyzer] Mapped before path to after path for graph lookup`);
         }
         
-        console.log(`[DependencyAnalyzer] normalizedSource=${normalizedSource}`);
-        console.log(`[DependencyAnalyzer] graphKey=${graphKey}`);
-        console.log(`[DependencyAnalyzer] Reverse graph size: ${this.reverseDeps.size}`);
+        debugLog(`[DependencyAnalyzer] normalizedSource=${normalizedSource}`);
+        debugLog(`[DependencyAnalyzer] graphKey=${graphKey}`);
+        debugLog(`[DependencyAnalyzer] Reverse graph size: ${this.reverseDeps.size}`);
         
         // Try multiple path variations to find importers (handle case sensitivity, path separators, etc.)
         let directImporters = this.reverseDeps.get(graphKey) || new Set();
@@ -573,7 +574,7 @@ export class DependencyAnalyzer {
                 const normalizedKey = key.toLowerCase().replace(/\\/g, '/');
                 if (normalizedKey === normalizedGraphKey) {
                     directImporters = this.reverseDeps.get(key) || new Set();
-                    console.log(`[DependencyAnalyzer] Found match with case/path normalization: ${key}`);
+                    debugLog(`[DependencyAnalyzer] Found match with case/path normalization: ${key}`);
                     break;
                 }
             }
@@ -585,7 +586,7 @@ export class DependencyAnalyzer {
                     const keyRelPath = path.relative(projectRoot, key).replace(/\\/g, '/').toLowerCase();
                     if (keyRelPath === sourceRelPath) {
                         directImporters = this.reverseDeps.get(key) || new Set();
-                        console.log(`[DependencyAnalyzer] Found match by relative path: ${key}`);
+                        debugLog(`[DependencyAnalyzer] Found match by relative path: ${key}`);
                         break;
                     }
                 }
@@ -606,9 +607,9 @@ export class DependencyAnalyzer {
                 const sourceRel = path.relative(projectRoot, graphKey).replace(/\\/g, '/').toLowerCase();
                 return kBasename === sourceBasename || kRel === sourceRel || k.includes(sourceBasename);
             });
-            console.log(`[DependencyAnalyzer] Graph has ${allKeys.length} total keys`);
+            debugLog(`[DependencyAnalyzer] Graph has ${allKeys.length} total keys`);
             if (matchingKeys.length > 0) {
-                console.log(`[DependencyAnalyzer] Found ${matchingKeys.length} potentially matching keys:`);
+                debugLog(`[DependencyAnalyzer] Found ${matchingKeys.length} potentially matching keys:`);
                 matchingKeys.slice(0, 5).forEach(k => {
                     const rel = path.relative(projectRoot, k);
                     const importers = this.reverseDeps.get(k);
@@ -724,7 +725,7 @@ export class DependencyAnalyzer {
                 }
             }
             
-            console.log(`[DependencyAnalyzer] After symbol filtering: ${result.length} files`);
+            debugLog(`[DependencyAnalyzer] After symbol filtering: ${result.length} files`);
             return result;
         }
         
@@ -1047,7 +1048,7 @@ export class DependencyAnalyzer {
                 while ((match = defaultImportPattern.exec(content)) !== null) {
                     const lineNum = content.substring(0, match.index).split('\n').length;
                     usageLines.add(lineNum);
-                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as default at line ${lineNum}`);
+                    debugLog(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as default at line ${lineNum}`);
                 }
                 
                 // Check for namespace import: import * as symbolName from ...
@@ -1055,7 +1056,7 @@ export class DependencyAnalyzer {
                 while ((match = namespaceImportPattern.exec(content)) !== null) {
                     const lineNum = content.substring(0, match.index).split('\n').length;
                     usageLines.add(lineNum);
-                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as namespace at line ${lineNum}`);
+                    debugLog(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as namespace at line ${lineNum}`);
                 }
                 
                 // Check for usage: symbolName( or symbolName. or symbolName[
@@ -1064,7 +1065,7 @@ export class DependencyAnalyzer {
                 while ((match = usagePattern.exec(content)) !== null) {
                     const lineNum = content.substring(0, match.index).split('\n').length;
                     usageLines.add(lineNum);
-                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} uses symbol '${symbolName}' at line ${lineNum}`);
+                    debugLog(`[DependencyAnalyzer] File ${path.basename(filePath)} uses symbol '${symbolName}' at line ${lineNum}`);
                 }
             }
             
