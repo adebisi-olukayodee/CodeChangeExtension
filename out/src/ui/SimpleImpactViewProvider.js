@@ -41,8 +41,6 @@ class SimpleImpactViewProvider {
         this.analysisEntries = [];
         this.testResults = new Map(); // Store test results by test file path
         this.latestEntriesByFile = new Map();
-        this.ciResults = [];
-        this.ciContext = {};
         this.impactAnalyzer = impactAnalyzer;
         this.testRunner = testRunner;
         this.outputChannel = vscode.window.createOutputChannel('Impact Analyzer Navigation');
@@ -81,6 +79,7 @@ class SimpleImpactViewProvider {
         }
         else if (element.type === 'functions' || element.type === 'classes' ||
             element.type === 'tests' || element.type === 'downstream' ||
+            element.type === 'impacted-classes' ||
             element.type === 'metrics' || element.type === 'confidence' ||
             element.type === 'confidence-metric' || element.type === 'suggestions' ||
             element.type === 'sub-metrics' || element.type === 'sub-metric-detail' ||
@@ -93,11 +92,7 @@ class SimpleImpactViewProvider {
             element.type === 'test-result-error-line' || element.type === 'test-result-stack-line' ||
             element.type === 'test-result-output-line' || element.type === 'test-result-more' ||
             element.type === 'delta-summary' || element.type === 'delta-section' ||
-            element.type === 'delta-change' || element.type === 'ci-root' ||
-            element.type === 'ci-build' || element.type === 'ci-build-tests' ||
-            element.type === 'ci-build-tests-category' ||
-            element.type === 'ci-test' || element.type === 'ci-test-stack' ||
-            element.type === 'ci-test-metadata') {
+            element.type === 'delta-change') {
             return this.getDetailItems(element);
         }
         return Promise.resolve([]);
@@ -117,652 +112,7 @@ class SimpleImpactViewProvider {
         const actionsItem = new ImpactViewItem('Quick Actions', 'actions', vscode.TreeItemCollapsibleState.Collapsed);
         actionsItem.iconPath = new vscode.ThemeIcon('rocket');
         items.push(actionsItem);
-        const ciRootItem = this.createCiRootItem();
-        if (ciRootItem) {
-            items.push(ciRootItem);
-        }
         return items;
-    }
-    createCiRootItem() {
-        const hasResults = this.ciResults.length > 0;
-        const commit = this.ciContext.commitHash;
-        if (!hasResults && !commit) {
-            return undefined;
-        }
-        const collapsibleState = hasResults
-            ? vscode.TreeItemCollapsibleState.Collapsed
-            : vscode.TreeItemCollapsibleState.None;
-        const ciItem = new ImpactViewItem('CI Test Results', 'ci-root', collapsibleState);
-        ciItem.iconPath = new vscode.ThemeIcon('beaker');
-        if (commit) {
-            ciItem.description = `Commit ${commit.substring(0, 8)}`;
-        }
-        else if (!hasResults) {
-            ciItem.description = 'No commit tracked';
-        }
-        if (this.ciContext.lastUpdated) {
-            ciItem.tooltip = `Last fetched ${this.formatRelativeTime(this.ciContext.lastUpdated.getTime())}`;
-        }
-        else if (!hasResults && commit) {
-            ciItem.tooltip = `Awaiting CI results for commit ${commit.substring(0, 8)}`;
-        }
-        else if (!hasResults) {
-            ciItem.tooltip = 'CI results will appear after the first synced run.';
-        }
-        ciItem.analysisResult = { commitHash: commit };
-        return ciItem;
-    }
-    getCiBuildItems() {
-        if (this.ciResults.length === 0) {
-            const placeholder = new ImpactViewItem(this.ciContext.commitHash ? 'No CI results received yet for this commit.' : 'CI results unavailable.', 'ci-message', vscode.TreeItemCollapsibleState.None);
-            placeholder.iconPath = new vscode.ThemeIcon('info');
-            return [placeholder];
-        }
-        return this.ciResults.map(build => {
-            const buildItem = new ImpactViewItem(this.formatCiBuildLabel(build), 'ci-build', vscode.TreeItemCollapsibleState.Collapsed);
-            buildItem.iconPath = new vscode.ThemeIcon(this.getCiStatusIconName(build));
-            buildItem.description = this.buildCiBuildDescription(build);
-            buildItem.analysisResult = { build };
-            return buildItem;
-        });
-    }
-    formatCiBuildLabel(build) {
-        const shortCommit = build.commitHash ? build.commitHash.substring(0, 8) : `Build ${build.buildId}`;
-        if (build.summary.failed > 0) {
-            return `${shortCommit} • ${build.summary.failed} failing`;
-        }
-        if (build.summary.total > 0) {
-            return `${shortCommit} • ${build.summary.total} tests`;
-        }
-        return `${shortCommit} • No tests`;
-    }
-    buildCiBuildDescription(build) {
-        const parts = [];
-        if (build.summary.passed > 0) {
-            parts.push(`${build.summary.passed} passed`);
-        }
-        if (build.summary.failed > 0) {
-            parts.push(`${build.summary.failed} failed`);
-        }
-        if (build.summary.flaky > 0) {
-            parts.push(`${build.summary.flaky} flaky`);
-        }
-        if (build.summary.skipped > 0) {
-            parts.push(`${build.summary.skipped} skipped`);
-        }
-        if (build.createdAt) {
-            parts.push(this.formatRelativeTime(new Date(build.createdAt).getTime()));
-        }
-        return parts.join(' • ');
-    }
-    getCiStatusIconName(build) {
-        if (build.summary.failed > 0) {
-            return 'error';
-        }
-        if (build.summary.flaky > 0) {
-            return 'warning';
-        }
-        if (build.summary.total === 0) {
-            return 'watch';
-        }
-        return 'check';
-    }
-    deriveCiStatus(build) {
-        if (build.status) {
-            return build.status;
-        }
-        if (build.summary.failed > 0) {
-            return 'failed';
-        }
-        if (build.summary.total > 0 && build.summary.failed === 0) {
-            return 'passed';
-        }
-        return 'unknown';
-    }
-    createCiBuildDetailItems(build) {
-        const items = [];
-        const statusLabel = this.capitalize(this.deriveCiStatus(build));
-        const commitLabel = build.commitHash ? build.commitHash.substring(0, 8) : 'Unknown commit';
-        const testsLabel = `${build.summary.passed}/${build.summary.total} passed`;
-        const completedLabel = build.createdAt
-            ? this.formatRelativeTime(new Date(build.createdAt).getTime())
-            : 'time unknown';
-        const headlineParts = [
-            `Status ${statusLabel}`,
-            `Commit ${commitLabel}`,
-            `Tests ${testsLabel}`,
-            `Completed ${completedLabel}`
-        ];
-        const headlineItem = new ImpactViewItem(headlineParts.join(' • '), 'ci-build-info', vscode.TreeItemCollapsibleState.None);
-        headlineItem.iconPath = new vscode.ThemeIcon(this.getCiStatusIconName(build));
-        const tooltipLines = [];
-        tooltipLines.push(`Status: ${statusLabel}`);
-        if (build.commitHash) {
-            tooltipLines.push(`Commit: ${build.commitHash}`);
-        }
-        if (build.branch) {
-            tooltipLines.push(`Branch: ${build.branch}`);
-        }
-        if (build.workflowRunId) {
-            tooltipLines.push(`Workflow Run: ${build.workflowRunId}`);
-        }
-        tooltipLines.push(`Tests: ${build.summary.total}`);
-        tooltipLines.push(`Passed: ${build.summary.passed}`);
-        tooltipLines.push(`Failed: ${build.summary.failed}`);
-        tooltipLines.push(`Skipped: ${build.summary.skipped}`);
-        tooltipLines.push(`Flaky: ${build.summary.flaky}`);
-        if (build.createdAt) {
-            tooltipLines.push(`Completed at: ${new Date(build.createdAt).toLocaleString()}`);
-        }
-        headlineItem.tooltip = tooltipLines.join('\n');
-        items.push(headlineItem);
-        const failedRuns = build.testRuns.filter(run => {
-            const status = (run.status || '').toLowerCase();
-            return status === 'failed' || status === 'error';
-        });
-        const passedRuns = build.testRuns.filter(run => {
-            const status = (run.status || '').toLowerCase();
-            return status === 'passed';
-        });
-        const otherRuns = build.testRuns.filter(run => {
-            const status = (run.status || '').toLowerCase();
-            return status !== 'failed' && status !== 'error' && status !== 'passed';
-        });
-        const failedItem = new ImpactViewItem(`Failed Tests (${failedRuns.length})`, 'ci-build-tests-category', failedRuns.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
-        failedItem.iconPath = new vscode.ThemeIcon('error');
-        failedItem.analysisResult = { build, filter: 'failed' };
-        if (failedRuns.length === 0) {
-            failedItem.description = 'No failing tests';
-        }
-        items.push(failedItem);
-        const passedItem = new ImpactViewItem(`Passed Tests (${passedRuns.length})`, 'ci-build-tests-category', passedRuns.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
-        passedItem.iconPath = new vscode.ThemeIcon('check');
-        passedItem.analysisResult = { build, filter: 'passed' };
-        if (passedRuns.length === 0) {
-            passedItem.description = 'No passing tests recorded';
-        }
-        items.push(passedItem);
-        if (otherRuns.length > 0) {
-            const otherItem = new ImpactViewItem(`Other Tests (${otherRuns.length})`, 'ci-build-tests-category', vscode.TreeItemCollapsibleState.Collapsed);
-            otherItem.iconPath = new vscode.ThemeIcon('circle-large-outline');
-            otherItem.analysisResult = { build, filter: 'other' };
-            items.push(otherItem);
-        }
-        return items;
-    }
-    createCiTestItems(build) {
-        if (build.testRuns.length === 0) {
-            const placeholder = new ImpactViewItem('No test runs captured for this build.', 'ci-message', vscode.TreeItemCollapsibleState.None);
-            placeholder.iconPath = new vscode.ThemeIcon('info');
-            return [placeholder];
-        }
-        return build.testRuns.map(run => this.createCiTestItem(build, run));
-    }
-    createCiTestItemsForFilter(build, filter) {
-        let runs = [];
-        if (filter === 'failed') {
-            runs = build.testRuns.filter(run => {
-                const status = (run.status || '').toLowerCase();
-                return status === 'failed' || status === 'error';
-            });
-        }
-        else if (filter === 'passed') {
-            runs = build.testRuns.filter(run => (run.status || '').toLowerCase() === 'passed');
-        }
-        else {
-            runs = build.testRuns.filter(run => {
-                const status = (run.status || '').toLowerCase();
-                return status !== 'failed' && status !== 'error' && status !== 'passed';
-            });
-        }
-        if (runs.length === 0) {
-            const label = filter === 'failed'
-                ? 'No failing tests for this commit.'
-                : filter === 'passed'
-                    ? 'No passing tests recorded for this commit.'
-                    : 'No additional tests recorded.';
-            const placeholder = new ImpactViewItem(label, 'ci-message', vscode.TreeItemCollapsibleState.None);
-            placeholder.iconPath = new vscode.ThemeIcon(filter === 'failed' ? 'info' : filter === 'passed' ? 'check' : 'circle-large-outline');
-            return [placeholder];
-        }
-        const filteredRuns = runs.map(run => this.createCiTestItem(build, run));
-        const extraStatuses = new Set();
-        for (const run of runs) {
-            const status = (run.status || '').toLowerCase();
-            if (filter === 'failed' && status !== 'failed' && status !== 'error') {
-                extraStatuses.add(status);
-            }
-            if (filter === 'passed' && status !== 'passed') {
-                extraStatuses.add(status);
-            }
-            if (filter === 'other' && (status === 'failed' || status === 'error' || status === 'passed')) {
-                extraStatuses.add(status);
-            }
-        }
-        if (extraStatuses.size > 0) {
-            const note = new ImpactViewItem(`Includes statuses: ${Array.from(extraStatuses).join(', ')}`, 'ci-message', vscode.TreeItemCollapsibleState.None);
-            note.iconPath = new vscode.ThemeIcon('info');
-            filteredRuns.push(note);
-        }
-        return filteredRuns;
-    }
-    createCiTestItem(build, run) {
-        const hasDetails = Boolean(run.errorMessage) || Boolean(run.stackTrace) || (run.metadata && Object.keys(run.metadata).length > 0);
-        const collapsibleState = hasDetails ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
-        const testItem = new ImpactViewItem(this.formatCiTestLabel(run), 'ci-test', collapsibleState);
-        testItem.iconPath = new vscode.ThemeIcon(this.getCiTestIconName(run));
-        testItem.analysisResult = { run, build };
-        const descriptionParts = [];
-        if (run.testSuite) {
-            descriptionParts.push(this.getDisplayPath(run.testSuite));
-        }
-        const duration = this.formatDuration(run.duration);
-        if (duration) {
-            descriptionParts.push(duration);
-        }
-        const location = this.extractLocationFromRun(run);
-        if (location?.lineNumber) {
-            descriptionParts.push(`line ${location.lineNumber}`);
-        }
-        if (descriptionParts.length > 0) {
-            testItem.description = descriptionParts.join(' • ');
-        }
-        const commandPayload = this.buildCiTestLocationPayload(build, run, location);
-        testItem.command = {
-            command: 'impactAnalyzer.openCiTestLocation',
-            title: 'Open Test Location',
-            arguments: [commandPayload]
-        };
-        return testItem;
-    }
-    buildCiTestLocationPayload(build, run, location) {
-        return {
-            build,
-            run,
-            filePath: location?.filePath,
-            lineNumber: location?.lineNumber,
-            candidates: this.buildPathCandidates(run, location)
-        };
-    }
-    buildPathCandidates(run, location) {
-        const candidates = new Set();
-        const addCandidate = (value) => {
-            if (typeof value === 'string') {
-                const trimmed = value.trim();
-                if (trimmed.length > 0) {
-                    candidates.add(trimmed);
-                }
-            }
-        };
-        addCandidate(location?.filePath);
-        const metadata = run.metadata ?? {};
-        const metadataKeys = [
-            'filePath',
-            'filepath',
-            'path',
-            'relativePath',
-            'repoPath',
-            'repoFilePath',
-            'sourcePath',
-            'absolutePath',
-            'file',
-            'fullPath',
-            'relativeFilePath',
-            'workspacePath'
-        ];
-        for (const key of metadataKeys) {
-            addCandidate(metadata[key]);
-        }
-        if (typeof metadata.fileName === 'string') {
-            addCandidate(metadata.fileName);
-            if (typeof metadata.directory === 'string') {
-                addCandidate(path.join(metadata.directory, metadata.fileName));
-            }
-            if (typeof metadata.package === 'string') {
-                addCandidate(path.join(metadata.package.replace(/\./g, '/'), metadata.fileName));
-            }
-        }
-        if (metadata.packageName && metadata.className) {
-            const extension = this.ensureExtension(metadata.extension || metadata.fileExtension || metadata.fileExt);
-            addCandidate(path.join(String(metadata.packageName).replace(/\./g, '/'), `${metadata.className}${extension}`));
-        }
-        addCandidate(run.testSuite);
-        if (run.testSuite && !run.testSuite.includes('/') && !run.testSuite.includes('\\')) {
-            const suitePath = run.testSuite.replace(/\./g, '/');
-            const guessedExtension = this.guessExtensionFromRun(run, metadata);
-            if (guessedExtension) {
-                addCandidate(`${suitePath}${guessedExtension.startsWith('.') ? guessedExtension : `.${guessedExtension}`}`);
-            }
-            else {
-                addCandidate(suitePath);
-            }
-        }
-        if (typeof metadata.className === 'string' && typeof metadata.package === 'string') {
-            const extension = this.ensureExtension(metadata.extension || metadata.fileExtension || metadata.fileExt);
-            addCandidate(path.join(metadata.package.replace(/\./g, '/'), `${metadata.className}${extension}`));
-        }
-        return Array.from(candidates);
-    }
-    ensureExtension(value, defaultExt = '.java') {
-        if (typeof value !== 'string' || value.trim().length === 0) {
-            return defaultExt;
-        }
-        const trimmed = value.trim();
-        return trimmed.startsWith('.') ? trimmed : `.${trimmed}`;
-    }
-    guessExtensionFromRun(run, metadata) {
-        const metaExt = metadata?.extension || metadata?.fileExtension || metadata?.fileExt;
-        if (typeof metaExt === 'string' && metaExt.trim().length > 0) {
-            return metaExt.startsWith('.') ? metaExt : `.${metaExt}`;
-        }
-        if (typeof metadata?.fileName === 'string') {
-            const ext = path.extname(metadata.fileName);
-            if (ext) {
-                return ext;
-            }
-        }
-        const framework = (run.framework || '').toLowerCase();
-        if (framework.includes('junit') || framework.includes('testng')) {
-            return '.java';
-        }
-        if (framework.includes('pytest') || framework.includes('nose')) {
-            return '.py';
-        }
-        if (framework.includes('jest') || framework.includes('mocha') || framework.includes('cypress') || framework.includes('playwright')) {
-            return '.ts';
-        }
-        if (framework.includes('rspec')) {
-            return '.rb';
-        }
-        if (framework.includes('go')) {
-            return '.go';
-        }
-        return undefined;
-    }
-    async openCiTestLocation(payload) {
-        if (!payload) {
-            vscode.window.showWarningMessage('Impact Analyzer: Unable to open test location (missing payload).');
-            return;
-        }
-        const locationFromRun = payload.run ? this.extractLocationFromRun(payload.run) : undefined;
-        const lineNumber = payload.lineNumber ?? locationFromRun?.lineNumber;
-        const candidateSet = new Set();
-        if (payload.filePath) {
-            candidateSet.add(payload.filePath);
-        }
-        if (payload.candidates) {
-            for (const candidate of payload.candidates) {
-                if (candidate) {
-                    candidateSet.add(candidate);
-                }
-            }
-        }
-        if (payload.run) {
-            for (const candidate of this.buildPathCandidates(payload.run, locationFromRun)) {
-                candidateSet.add(candidate);
-            }
-        }
-        const candidates = Array.from(candidateSet);
-        const uri = await this.resolveCandidateUri(candidates);
-        if (!uri) {
-            const label = payload.run?.testSuite || payload.filePath || 'test run';
-            vscode.window.showWarningMessage(`Impact Analyzer: Unable to locate source file for ${label}.`);
-            return;
-        }
-        const lineIndex = lineNumber ? Math.max(lineNumber - 1, 0) : 0;
-        await vscode.window.showTextDocument(uri, {
-            selection: new vscode.Range(lineIndex, 0, lineIndex, 0)
-        });
-    }
-    async resolveCandidateUri(candidates) {
-        if (candidates.length === 0) {
-            return undefined;
-        }
-        const attempted = new Set();
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        for (const candidate of candidates) {
-            const variants = this.expandCandidateVariants(candidate);
-            for (const variant of variants) {
-                if (attempted.has(variant)) {
-                    continue;
-                }
-                attempted.add(variant);
-                if (fs.existsSync(variant)) {
-                    return vscode.Uri.file(variant);
-                }
-                if (workspaceFolders) {
-                    for (const folder of workspaceFolders) {
-                        const fullPath = path.resolve(folder.uri.fsPath, variant);
-                        if (fs.existsSync(fullPath)) {
-                            return vscode.Uri.file(fullPath);
-                        }
-                    }
-                }
-            }
-        }
-        if (!workspaceFolders || workspaceFolders.length === 0) {
-            return undefined;
-        }
-        const normalizedCandidates = candidates
-            .map(candidate => this.normalizeCandidate(candidate))
-            .filter((value) => typeof value === 'string' && value.length > 0);
-        const basenames = Array.from(new Set(normalizedCandidates.map(candidate => path.basename(candidate)).filter(name => !!name && name !== '.' && name !== '/')));
-        for (const basename of basenames) {
-            const files = await vscode.workspace.findFiles(`**/${basename}`, '**/{.git,node_modules,bower_components,dist,out}/**', 25);
-            if (files.length === 0) {
-                continue;
-            }
-            if (files.length === 1) {
-                return files[0];
-            }
-            const loweredCandidates = normalizedCandidates.map(candidate => candidate.toLowerCase());
-            for (const file of files) {
-                const filePathLower = file.fsPath.replace(/\\/g, '/').toLowerCase();
-                if (loweredCandidates.some(candidate => filePathLower.endsWith(candidate))) {
-                    return file;
-                }
-            }
-            return files[0];
-        }
-        return undefined;
-    }
-    normalizeCandidate(value) {
-        if (typeof value !== 'string') {
-            return undefined;
-        }
-        let normalized = value.trim();
-        if (normalized.length === 0) {
-            return undefined;
-        }
-        normalized = normalized.replace(/^file:\/+/, '');
-        normalized = normalized.replace(/^\\\\\?\\/, '');
-        normalized = normalized.replace(/\\/g, '/');
-        if (normalized.startsWith('~')) {
-            const home = process.env.HOME || process.env.USERPROFILE;
-            if (home) {
-                normalized = path.join(home, normalized.slice(1));
-            }
-        }
-        return normalized;
-    }
-    expandCandidateVariants(candidate) {
-        const variants = new Set();
-        const normalized = this.normalizeCandidate(candidate);
-        if (!normalized) {
-            return [];
-        }
-        variants.add(normalized);
-        variants.add(normalized.replace(/\//g, path.sep));
-        const withoutDrive = normalized.replace(/^[A-Za-z]:/, '').replace(/^\/+/, '');
-        if (withoutDrive.length > 0) {
-            variants.add(withoutDrive);
-            variants.add(withoutDrive.replace(/\//g, path.sep));
-        }
-        return Array.from(variants).filter(value => value.length > 0);
-    }
-    formatCiTestLabel(run) {
-        const status = run.status.toLowerCase();
-        const suite = run.testSuite ? this.getDisplayPath(run.testSuite) : 'Test';
-        const name = run.name ? `: ${run.name}` : '';
-        let prefix = 'ℹ️';
-        if (status === 'passed') {
-            prefix = '✅';
-        }
-        else if (status === 'failed' || status === 'error') {
-            prefix = '❌';
-        }
-        else if (status === 'skipped') {
-            prefix = '⏭️';
-        }
-        else if (status === 'flaky') {
-            prefix = '⚠️';
-        }
-        return `${prefix} ${suite}${name}`;
-    }
-    getCiTestIconName(run) {
-        const status = run.status.toLowerCase();
-        if (status === 'passed') {
-            return 'check';
-        }
-        if (status === 'failed' || status === 'error') {
-            return 'error';
-        }
-        if (status === 'skipped') {
-            return 'circle-slash';
-        }
-        if (status === 'flaky') {
-            return 'warning';
-        }
-        return 'question';
-    }
-    createCiTestDetailItems(run) {
-        const items = [];
-        if (run.errorMessage) {
-            const errorItem = new ImpactViewItem(run.errorMessage, 'ci-test-message', vscode.TreeItemCollapsibleState.None);
-            errorItem.iconPath = new vscode.ThemeIcon('error');
-            items.push(errorItem);
-        }
-        if (run.stackTrace) {
-            const stackItem = new ImpactViewItem('Stack Trace', 'ci-test-stack', vscode.TreeItemCollapsibleState.Collapsed);
-            stackItem.iconPath = new vscode.ThemeIcon('list-selection');
-            stackItem.analysisResult = { stackTrace: run.stackTrace };
-            items.push(stackItem);
-        }
-        if (run.metadata && Object.keys(run.metadata).length > 0) {
-            const metadataItem = new ImpactViewItem('Metadata', 'ci-test-metadata', vscode.TreeItemCollapsibleState.Collapsed);
-            metadataItem.iconPath = new vscode.ThemeIcon('bracket-dot');
-            metadataItem.analysisResult = { metadata: run.metadata };
-            items.push(metadataItem);
-        }
-        return items;
-    }
-    createCiStackItems(stackTrace) {
-        const lines = stackTrace.split(/\r?\n/).filter(line => line.trim().length > 0);
-        if (lines.length === 0) {
-            const placeholder = new ImpactViewItem('No stack trace entries', 'ci-message', vscode.TreeItemCollapsibleState.None);
-            placeholder.iconPath = new vscode.ThemeIcon('info');
-            return [placeholder];
-        }
-        return lines.slice(0, 50).map(line => {
-            const lineItem = new ImpactViewItem(line.trim(), 'ci-test-stack-line', vscode.TreeItemCollapsibleState.None);
-            lineItem.iconPath = new vscode.ThemeIcon('chevron-right');
-            return lineItem;
-        });
-    }
-    createCiMetadataItems(metadata) {
-        const entries = Object.entries(metadata);
-        if (entries.length === 0) {
-            const placeholder = new ImpactViewItem('No metadata available', 'ci-message', vscode.TreeItemCollapsibleState.None);
-            placeholder.iconPath = new vscode.ThemeIcon('info');
-            return [placeholder];
-        }
-        return entries.map(([key, value]) => {
-            const displayValue = typeof value === 'string'
-                ? value
-                : JSON.stringify(value, null, 2);
-            const trimmedValue = displayValue.length > 200 ? `${displayValue.substring(0, 200)}…` : displayValue;
-            const metadataItem = new ImpactViewItem(`${key}: ${trimmedValue}`, 'ci-test-metadata-entry', vscode.TreeItemCollapsibleState.None);
-            metadataItem.iconPath = new vscode.ThemeIcon('symbol-field');
-            return metadataItem;
-        });
-    }
-    formatDuration(duration) {
-        if (duration === undefined || duration === null || isNaN(duration)) {
-            return undefined;
-        }
-        if (duration > 1000) {
-            return `${Math.round(duration / 1000)}s`;
-        }
-        if (duration > 1) {
-            return `${duration.toFixed(1)}s`;
-        }
-        if (duration > 0) {
-            return `${Math.max(Math.round(duration * 1000), 1)}ms`;
-        }
-        return undefined;
-    }
-    extractLocationFromRun(run) {
-        const metadata = run.metadata || {};
-        const metadataPath = metadata.filePath || metadata.filepath || metadata.path;
-        const metadataLineRaw = metadata.lineNumber ?? metadata.line ?? metadata.line_number;
-        let lineNumber;
-        if (typeof metadataLineRaw === 'number') {
-            lineNumber = metadataLineRaw;
-        }
-        else if (typeof metadataLineRaw === 'string') {
-            const parsed = parseInt(metadataLineRaw, 10);
-            if (!isNaN(parsed)) {
-                lineNumber = parsed;
-            }
-        }
-        if (typeof metadataPath === 'string') {
-            return { filePath: metadataPath, lineNumber };
-        }
-        if (run.stackTrace) {
-            const lines = run.stackTrace.split(/\r?\n/);
-            const regex = /((?:[a-zA-Z]:)?[^:\s]+?\.(?:ts|tsx|js|jsx|py|java|cs)):(\d+)(?::(\d+))?/;
-            for (const line of lines) {
-                const match = line.match(regex);
-                if (match) {
-                    const filePath = match[1];
-                    const lineNumber = parseInt(match[2], 10);
-                    return { filePath, lineNumber: isNaN(lineNumber) ? undefined : lineNumber };
-                }
-            }
-        }
-        return undefined;
-    }
-    resolveFilePath(filePathValue) {
-        const variants = this.expandCandidateVariants(filePathValue);
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        for (const variant of variants) {
-            if (fs.existsSync(variant)) {
-                return variant;
-            }
-            if (workspaceFolders) {
-                for (const folder of workspaceFolders) {
-                    const resolved = path.resolve(folder.uri.fsPath, variant);
-                    if (fs.existsSync(resolved)) {
-                        return resolved;
-                    }
-                }
-            }
-        }
-        return undefined;
-    }
-    getDisplayPath(rawPath) {
-        const workspace = vscode.workspace.workspaceFolders?.[0];
-        if (!workspace) {
-            return path.basename(rawPath);
-        }
-        const relative = path.relative(workspace.uri.fsPath, rawPath);
-        return relative || path.basename(rawPath);
-    }
-    capitalize(value) {
-        if (!value) {
-            return value;
-        }
-        return value.charAt(0).toUpperCase() + value.slice(1);
     }
     async getFileItems(fileElement) {
         const items = [];
@@ -794,6 +144,15 @@ class SimpleImpactViewProvider {
             items.push(noChangesItem);
             return items;
         }
+        // Show warning for JavaScript files (weaker guarantees)
+        const fileExt = require('path').extname(result.filePath).toLowerCase();
+        if (['.js', '.jsx'].includes(fileExt)) {
+            const jsWarningItem = new ImpactViewItem('⚠️ JavaScript File - Weaker Analysis Guarantees', 'js-warning', vscode.TreeItemCollapsibleState.None);
+            jsWarningItem.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('editorWarning.foreground'));
+            jsWarningItem.description = 'TypeScript recommended for best accuracy';
+            jsWarningItem.tooltip = 'JavaScript files are analyzed with weaker guarantees due to lack of type information. Breaking change detection and dependency analysis are less reliable than TypeScript. Consider using .ts/.tsx files for best results.';
+            items.push(jsWarningItem);
+        }
         // WHAT WILL BREAK - Show critical issues first (EXPANDED by default)
         const breakingIssues = this.extractBreakingIssues(result);
         if (breakingIssues.length > 0) {
@@ -818,40 +177,34 @@ class SimpleImpactViewProvider {
             classesItem.iconPath = new vscode.ThemeIcon('symbol-class');
             items.push(classesItem);
         }
-        // Downstream Components - HIDDEN (shown in "What Will Break" instead)
-        // if (result.downstreamComponents && result.downstreamComponents.length > 0) {
-        //     const downstreamItem = new ImpactViewItem(
-        //         `Downstream Components (${result.downstreamComponents.length})`,
-        //         'downstream',
-        //         vscode.TreeItemCollapsibleState.Collapsed
-        //     );
-        //     downstreamItem.analysisResult = result;
-        //     downstreamItem.iconPath = new vscode.ThemeIcon('arrow-down');
-        //     items.push(downstreamItem);
-        // }
-        // Confidence Metrics - HIDDEN
-        // if (result.confidenceResult) {
-        //     const confidenceItem = new ImpactViewItem(
-        //         `Confidence Score: ${result.confidenceResult.statusIcon} ${result.confidenceResult.total}/100 (${result.confidenceResult.status})`,
-        //         'confidence',
-        //         vscode.TreeItemCollapsibleState.Collapsed
-        //     );
-        //     confidenceItem.analysisResult = result;
-        //     confidenceItem.iconPath = new vscode.ThemeIcon('graph');
-        //     confidenceItem.description = result.confidenceResult.changedLines 
-        //         ? `${result.confidenceResult.changedLines} lines changed` 
-        //         : '';
-        //     items.push(confidenceItem);
-        // }
-        // Legacy Metrics - HIDDEN
-        // const metricsItem = new ImpactViewItem(
-        //     'Legacy Metrics',
-        //     'metrics',
-        //     vscode.TreeItemCollapsibleState.Collapsed
-        // );
-        // metricsItem.analysisResult = result;
-        // metricsItem.iconPath = new vscode.ThemeIcon('graph');
-        // items.push(metricsItem);
+        // Changed Functions
+        if (result.changedFunctions && result.changedFunctions.length > 0) {
+            const functionsItem = new ImpactViewItem(`Functions (${result.changedFunctions.length})`, 'functions', vscode.TreeItemCollapsibleState.Collapsed);
+            functionsItem.analysisResult = result;
+            functionsItem.iconPath = new vscode.ThemeIcon('symbol-function');
+            items.push(functionsItem);
+        }
+        // Impacted Tests
+        if (result.affectedTests && result.affectedTests.length > 0) {
+            const testsItem = new ImpactViewItem(`Impacted Tests (${result.affectedTests.length})`, 'tests', vscode.TreeItemCollapsibleState.Collapsed);
+            testsItem.analysisResult = result;
+            testsItem.iconPath = new vscode.ThemeIcon('beaker');
+            items.push(testsItem);
+        }
+        else {
+            const noTestsItem = new ImpactViewItem('✅ No Impacted Tests Detected', 'no-impacted-tests', vscode.TreeItemCollapsibleState.None);
+            noTestsItem.iconPath = new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
+            noTestsItem.description = 'No tests found to be affected by this change.';
+            noTestsItem.tooltip = 'This means your changes do not affect any existing tests, or the test discovery could not find any relevant tests.';
+            items.push(noTestsItem);
+        }
+        // Impacted Classes
+        if (result.changedClasses && result.changedClasses.length > 0) {
+            const impactedClassesItem = new ImpactViewItem(`Impacted Classes (${result.changedClasses.length})`, 'impacted-classes', vscode.TreeItemCollapsibleState.Collapsed);
+            impactedClassesItem.analysisResult = result;
+            impactedClassesItem.iconPath = new vscode.ThemeIcon('symbol-class');
+            items.push(impactedClassesItem);
+        }
         return items;
     }
     async getRecentItems(recentElement) {
@@ -1159,50 +512,6 @@ class SimpleImpactViewProvider {
             || context.analysisResult
             || (typeof context.filePath === 'string' ? context : undefined)
             || (detailElement.filePath ? this.latestEntriesByFile.get(detailElement.filePath)?.result : undefined);
-        if (detailElement.type === 'ci-root') {
-            return this.getCiBuildItems();
-        }
-        if (detailElement.type === 'ci-build') {
-            const build = detailElement.analysisResult?.build;
-            if (!build) {
-                return items;
-            }
-            return this.createCiBuildDetailItems(build);
-        }
-        if (detailElement.type === 'ci-build-tests') {
-            const build = detailElement.analysisResult?.build;
-            if (!build) {
-                return items;
-            }
-            return this.createCiTestItems(build);
-        }
-        if (detailElement.type === 'ci-build-tests-category') {
-            const { build, filter } = detailElement.analysisResult || {};
-            if (build) {
-                return this.createCiTestItemsForFilter(build, filter);
-            }
-        }
-        else if (detailElement.type === 'ci-test') {
-            const run = detailElement.analysisResult?.run;
-            if (!run) {
-                return items;
-            }
-            return this.createCiTestDetailItems(run);
-        }
-        if (detailElement.type === 'ci-test-stack') {
-            const stackTrace = detailElement.analysisResult?.stackTrace;
-            if (!stackTrace) {
-                return items;
-            }
-            return this.createCiStackItems(stackTrace);
-        }
-        if (detailElement.type === 'ci-test-metadata') {
-            const metadata = detailElement.analysisResult?.metadata;
-            if (!metadata) {
-                return items;
-            }
-            return this.createCiMetadataItems(metadata);
-        }
         if (!inferredResult && detailElement.type !== 'delta-summary' && detailElement.type !== 'test-result-error' && detailElement.type !== 'test-result-stack' && detailElement.type !== 'test-result-output') {
             return items;
         }
@@ -1561,12 +870,29 @@ class SimpleImpactViewProvider {
                 items.push(classItem);
             }
         }
+        else if (detailElement.type === 'impacted-classes') {
+            for (const cls of safeResult.changedClasses || []) {
+                const classItem = new ImpactViewItem(cls, 'impacted-class', vscode.TreeItemCollapsibleState.None);
+                classItem.iconPath = new vscode.ThemeIcon('symbol-class');
+                items.push(classItem);
+            }
+        }
         else if (detailElement.type === 'tests') {
-            for (const test of safeResult.affectedTests || []) {
-                const testItem = new ImpactViewItem(require('path').basename(test), 'test', vscode.TreeItemCollapsibleState.None);
-                testItem.iconPath = new vscode.ThemeIcon('beaker');
-                testItem.description = test;
-                items.push(testItem);
+            const affectedTests = safeResult.affectedTests || [];
+            if (affectedTests.length === 0) {
+                const noTestsItem = new ImpactViewItem('No impacted tests detected', 'no-tests', vscode.TreeItemCollapsibleState.None);
+                noTestsItem.iconPath = new vscode.ThemeIcon('info');
+                noTestsItem.description = 'No tests found that import or reference the changed code';
+                noTestsItem.tooltip = 'The analysis did not find any test files that import or reference the changed code in this workspace.';
+                items.push(noTestsItem);
+            }
+            else {
+                for (const test of affectedTests) {
+                    const testItem = new ImpactViewItem(require('path').basename(test), 'test', vscode.TreeItemCollapsibleState.None);
+                    testItem.iconPath = new vscode.ThemeIcon('beaker');
+                    testItem.description = test;
+                    items.push(testItem);
+                }
             }
         }
         else if (detailElement.type === 'downstream') {
@@ -1605,7 +931,16 @@ class SimpleImpactViewProvider {
             }
             const defaultWorkspacePath = workspaceRoot || workspaceFolders[0]?.uri.fsPath || '';
             this.outputChannel.appendLine(`[SimpleImpactViewProvider] Using workspace root: ${defaultWorkspacePath}`);
-            for (const component of safeResult.downstreamComponents || []) {
+            const downstreamComponents = safeResult.downstreamComponents || [];
+            if (downstreamComponents.length === 0) {
+                const noDownstreamItem = new ImpactViewItem('No downstream impact found in this workspace', 'no-downstream', vscode.TreeItemCollapsibleState.None);
+                noDownstreamItem.iconPath = new vscode.ThemeIcon('info');
+                noDownstreamItem.description = 'No files found that import or use the changed code';
+                noDownstreamItem.tooltip = 'The analysis did not find any files in this workspace that import or reference the changed code. This does not mean the change is safe - external consumers may still be affected.';
+                items.push(noDownstreamItem);
+                return items;
+            }
+            for (const component of downstreamComponents) {
                 this.outputChannel.appendLine(`\n[SimpleImpactViewProvider] ========== Processing component: ${component} ==========`);
                 console.error(`[SimpleImpactViewProvider] Processing component: ${component}`);
                 // Normalize component path separators first (handle Windows backslashes)
@@ -1944,14 +1279,6 @@ class SimpleImpactViewProvider {
         }
         const remainingEntries = this.analysisEntries.filter(entry => !seenFiles.has(entry.result.filePath));
         this.analysisEntries = [...newEntries, ...remainingEntries].slice(0, 10);
-        this.refresh();
-    }
-    updateCiResults(payload) {
-        this.ciResults = payload.builds;
-        this.ciContext = {
-            commitHash: payload.commitHash,
-            lastUpdated: payload.fetchedAt
-        };
         this.refresh();
     }
     getAffectedFiles() {

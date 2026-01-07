@@ -5,7 +5,6 @@ import { TestRunner } from './test-runners/TestRunner';
 import { FileWatcher } from './core/FileWatcher';
 import { ConfigurationManager } from './core/ConfigurationManager';
 import { GitAnalyzer } from './analyzers/GitAnalyzer';
-import { CiResultsManager } from './services/CiResultsManager';
 import { WelcomeViewProvider } from './ui/WelcomeViewProvider';
 import { KeyboardNavigationManager } from './ui/KeyboardNavigationManager';
 import { InlineDecorationsManager } from './ui/InlineDecorationsManager';
@@ -174,9 +173,6 @@ export function activate(context: vscode.ExtensionContext) {
         const keyboardNavigationManager = new KeyboardNavigationManager(treeView, viewProvider, context);
         context.subscriptions.push(treeView, keyboardNavigationManager);
 
-        const ciResultsManager = new CiResultsManager(configManager, gitAnalyzer, viewProvider);
-        context.subscriptions.push(ciResultsManager);
-        void ciResultsManager.initialize();
 
         const supportedExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.cs', '.go', '.rs'];
 
@@ -251,6 +247,21 @@ export function activate(context: vscode.ExtensionContext) {
                         }
                     } catch (error) {
                         console.error('Auto-analysis on save failed:', error);
+                        const errorMessage = error instanceof Error ? error.message : String(error);
+                        vscode.window.showWarningMessage(
+                            `Impact Analyzer: Analysis failed for ${require('path').basename(document.fileName)}. ${errorMessage}`,
+                            'View Details'
+                        ).then(selection => {
+                            if (selection === 'View Details') {
+                                const outputChannel = vscode.window.createOutputChannel('Impact Analyzer');
+                                outputChannel.appendLine(`Analysis failed for ${document.fileName}:`);
+                                outputChannel.appendLine(errorMessage);
+                                if (error instanceof Error && error.stack) {
+                                    outputChannel.appendLine(error.stack);
+                                }
+                                outputChannel.show();
+                            }
+                        });
                     }
                 }
             });
@@ -285,6 +296,8 @@ export function activate(context: vscode.ExtensionContext) {
                 console.log(`[Impact Analyzer] Auto-refresh completed for ${filePath}`);
             } catch (error) {
                 console.error('[Impact Analyzer] Auto-refresh failed:', error);
+                // Auto-refresh failures are less critical, log but don't show notification
+                // to avoid spamming users during rapid edits
             }
         };
 
@@ -334,16 +347,6 @@ export function activate(context: vscode.ExtensionContext) {
                 refreshAuto = true;
             }
 
-            if (event.affectsConfiguration('impactAnalyzer.backendUrl') ||
-                event.affectsConfiguration('impactAnalyzer.apiToken') ||
-                event.affectsConfiguration('impactAnalyzer.teamId') ||
-                event.affectsConfiguration('impactAnalyzer.repoFullName') ||
-                event.affectsConfiguration('impactAnalyzer.enableCiPolling') ||
-                event.affectsConfiguration('impactAnalyzer.ciPollingInterval')) {
-                refreshConfig = true;
-                refreshCi = true;
-            }
-
             if (refreshConfig) {
                 configManager.refresh();
             }
@@ -351,19 +354,12 @@ export function activate(context: vscode.ExtensionContext) {
             if (refreshAuto) {
                 registerAutoRefreshListener();
             }
-
-            if (refreshCi) {
-                ciResultsManager.onConfigurationChanged();
-            }
         });
 
         context.subscriptions.push(configurationChangeDisposable);
 
         // Register commands (manual workflow entry points)
         const commands = [
-            vscode.commands.registerCommand('impactAnalyzer.openCiTestLocation', async (payload) => {
-                await viewProvider.openCiTestLocation(payload);
-            }),
             vscode.commands.registerCommand('impactAnalyzer.openDownstreamFile', async (filePath: string, line?: number | string) => {
                 const fs = require('fs');
                 const path = require('path');
@@ -589,17 +585,6 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             }),
 
-            vscode.commands.registerCommand('impactAnalyzer.refreshCiResults', async () => {
-                await vscode.window.withProgress(
-                    {
-                        location: vscode.ProgressLocation.Window,
-                        title: 'Refreshing CI test results...'
-                    },
-                    async () => {
-                        await ciResultsManager.refreshCiResults(true);
-                    }
-                );
-            }),
 
             // Utility commands
             vscode.commands.registerCommand('impactAnalyzer.toggleAutoAnalysis', () => {

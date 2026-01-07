@@ -162,6 +162,68 @@ Located in the Explorer sidebar, shows:
 
 MIT License - see LICENSE file for details
 
+## 🔒 Privacy & Data Security
+
+**All analysis runs locally on your machine.** Your code never leaves your computer.
+
+- All code analysis happens entirely on your machine
+- No network calls are made
+- No code or data is sent anywhere
+- All processing uses local TypeScript compiler and file system access
+- The extension operates entirely offline
+
+## 📋 What Counts as a Breaking Change?
+
+The extension detects the following breaking changes in TypeScript/JavaScript:
+
+### Function/Method Breaking Changes
+- **Parameter removed** - Function signature changed (TSAPI-FN-002)
+- **Parameter optional → required** - Parameter is now mandatory (TSAPI-FN-003)
+- **Parameter type changed** - Type incompatibility (TSAPI-FN-004)
+- **Rest parameter removed** - Variadic arguments no longer accepted (TSAPI-FN-005)
+- **Return type changed** - Return type incompatibility (TSAPI-FN-001)
+- **Overload removed** - Function overload set changed (TSAPI-FN-007)
+
+### Class Breaking Changes
+- **Public method removed** - Method no longer available (TSAPI-CL-001)
+- **Method visibility tightened** - Public → protected/private (TSAPI-CL-002)
+- **Property removed** - Class property no longer exists (TSAPI-CL-003)
+
+### Type/Interface Breaking Changes
+- **Export removed** - Symbol no longer exported (TSAPI-EXP-001)
+- **Property removed from interface** - Required property missing (TSAPI-IF-001)
+- **Property optional → required** - Property now mandatory (TSAPI-IF-002)
+- **Type definition changed** - Type structure modified (TSAPI-TYPE-002)
+
+### What is NOT Detected
+- **Internal/private symbols** - Only exported (public API) symbols are analyzed
+- **Runtime behavior changes** - Only structural/signature changes
+- **Semantic changes** - Logic changes that don't affect types
+- **External package changes** - Only workspace-local code is analyzed
+
+## ⚠️ Limitations & Guarantees
+
+### What the Tool Guarantees
+- ✅ Accurate detection of structural breaking changes (signatures, types, exports)
+- ✅ TypeScript module resolution for dependency tracking
+- ✅ Detection of downstream files that import changed code
+- ✅ Line-level accuracy for symbol usage locations
+
+### What the Tool Does NOT Guarantee
+- ❌ **100% coverage** - May miss some edge cases in complex codebases
+- ❌ **Runtime correctness** - Only analyzes types/signatures, not behavior
+- ❌ **External consumers** - Only analyzes workspace-local code
+- ❌ **JavaScript accuracy** - Weaker guarantees for `.js` files (no type information)
+- ❌ **Test impact certainty** - Test discovery uses heuristics, not guaranteed
+
+### JavaScript Files
+JavaScript files are supported but with **weaker guarantees**:
+- No type information available for accurate signature analysis
+- Dependency detection relies on import patterns, not type checking
+- Breaking change detection is less reliable than TypeScript
+
+**Recommendation**: Use TypeScript (`.ts`/`.tsx`) files for best accuracy.
+
 ## 🆘 Support
 
 For issues and feature requests, please use the GitHub issue tracker.

@@ -21,6 +21,9 @@ export class DependencyAnalyzer {
     private reverseDeps: Map<string, Set<string>> = new Map(); // target -> Set<importers>
     private exportGraph: Map<string, Map<string, ExportInfo>> = new Map(); // modulePath -> Map<exportName, ExportInfo>
     private tsConfigCache: Map<string, { options: ts.CompilerOptions; host: ts.ModuleResolutionHost }> = new Map();
+    // Safety limits to prevent freezing on very large repos
+    private readonly MAX_FILES_TO_ANALYZE = 10000; // Maximum files to process in dependency graph
+    private readonly MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB max file size
     
     /**
      * Build reverse import graph by scanning all TypeScript files in the project
@@ -31,12 +34,21 @@ export class DependencyAnalyzer {
         this.exportGraph.clear();
         
         const allTsFiles: string[] = [];
+        let fileCountExceeded = false;
         
         // Collect all .ts and .tsx files
         const collectFiles = (dir: string) => {
+            if (allTsFiles.length >= this.MAX_FILES_TO_ANALYZE) {
+                fileCountExceeded = true;
+                return;
+            }
             try {
                 const items = fs.readdirSync(dir);
                 for (const item of items) {
+                    if (allTsFiles.length >= this.MAX_FILES_TO_ANALYZE) {
+                        fileCountExceeded = true;
+                        break;
+                    }
                     const itemPath = path.join(dir, item);
                     const stat = fs.statSync(itemPath);
                     
@@ -45,7 +57,12 @@ export class DependencyAnalyzer {
                             collectFiles(itemPath);
                         }
                     } else if (stat.isFile() && this.isSourceFile(item)) {
-                        allTsFiles.push(itemPath);
+                        // Check file size before adding
+                        if (stat.size <= this.MAX_FILE_SIZE_BYTES) {
+                            allTsFiles.push(itemPath);
+                        } else {
+                            console.warn(`[DependencyAnalyzer] Skipping large file: ${itemPath} (${(stat.size / 1024 / 1024).toFixed(2)}MB)`);
+                        }
                     }
                 }
             } catch (error) {
@@ -55,6 +72,9 @@ export class DependencyAnalyzer {
         
         collectFiles(projectRoot);
         console.log(`[DependencyAnalyzer] Found ${allTsFiles.length} TypeScript files`);
+        if (fileCountExceeded) {
+            console.warn(`[DependencyAnalyzer] ⚠️ File count limit reached (${this.MAX_FILES_TO_ANALYZE}). Analysis may be incomplete for very large repositories.`);
+        }
         
         // Get TypeScript compiler options for module resolution
         const tsConfig = this.findTsConfig(projectRoot);
@@ -64,6 +84,12 @@ export class DependencyAnalyzer {
         // Parse imports and exports from each file
         for (const filePath of allTsFiles) {
             try {
+                // Double-check file size before reading (in case it changed)
+                const stat = fs.statSync(filePath);
+                if (stat.size > this.MAX_FILE_SIZE_BYTES) {
+                    console.warn(`[DependencyAnalyzer] Skipping large file: ${filePath} (${(stat.size / 1024 / 1024).toFixed(2)}MB)`);
+                    continue;
+                }
                 const content = fs.readFileSync(filePath, 'utf8');
                 
                 // Parse imports using TypeScript module resolution

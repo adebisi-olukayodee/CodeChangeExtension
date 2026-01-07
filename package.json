@@ -13,7 +13,11 @@
     "Linters"
   ],
   "activationEvents": [
-    "*"
+    "onStartupFinished",
+    "onCommand:impactAnalyzer.analyzeCurrentFile",
+    "onCommand:impactAnalyzer.analyzeWorkspace",
+    "onCommand:impactAnalyzer.runAffectedTests",
+    "onView:impactAnalyzerView"
   ],
   "main": "./out/src/extension.js",
   "contributes": {
@@ -51,11 +55,6 @@
       {
         "command": "impactAnalyzer.toggleAutoRefresh",
         "title": "Toggle Auto-Refresh on Save",
-        "category": "Impact Analyzer"
-      },
-      {
-        "command": "impactAnalyzer.refreshCiResults",
-        "title": "Refresh CI Test Results",
         "category": "Impact Analyzer"
       },
       {
@@ -150,36 +149,6 @@
           "type": "number",
           "default": 400,
           "description": "Delay in milliseconds before refreshing analysis after file save when auto-refresh is enabled"
-        },
-        "impactAnalyzer.backendUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Base URL of the Impact Analyzer backend/dashboard (e.g., https://dashboard.yourcompany.com)"
-        },
-        "impactAnalyzer.apiToken": {
-          "type": "string",
-          "default": "",
-          "description": "API token used to authenticate requests to the Impact Analyzer backend"
-        },
-        "impactAnalyzer.teamId": {
-          "type": "string",
-          "default": "",
-          "description": "Team identifier used when requesting CI test results"
-        },
-        "impactAnalyzer.repoFullName": {
-          "type": "string",
-          "default": "",
-          "description": "Repository full name (owner/repo) associated with CI runs"
-        },
-        "impactAnalyzer.enableCiPolling": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable background polling for CI test results"
-        },
-        "impactAnalyzer.ciPollingInterval": {
-          "type": "number",
-          "default": 180000,
-          "description": "Polling interval in milliseconds for refreshing CI test results"
         },
         "impactAnalyzer.analysisDelay": {
           "type": "number",

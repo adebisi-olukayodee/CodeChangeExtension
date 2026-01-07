@@ -30,7 +30,6 @@ const SimpleImpactViewProvider_1 = require("./ui/SimpleImpactViewProvider");
 const TestRunner_1 = require("./test-runners/TestRunner");
 const ConfigurationManager_1 = require("./core/ConfigurationManager");
 const GitAnalyzer_1 = require("./analyzers/GitAnalyzer");
-const CiResultsManager_1 = require("./services/CiResultsManager");
 const WelcomeViewProvider_1 = require("./ui/WelcomeViewProvider");
 const KeyboardNavigationManager_1 = require("./ui/KeyboardNavigationManager");
 const InlineDecorationsManager_1 = require("./ui/InlineDecorationsManager");
@@ -182,9 +181,6 @@ function activate(context) {
         });
         const keyboardNavigationManager = new KeyboardNavigationManager_1.KeyboardNavigationManager(treeView, viewProvider, context);
         context.subscriptions.push(treeView, keyboardNavigationManager);
-        const ciResultsManager = new CiResultsManager_1.CiResultsManager(configManager, gitAnalyzer, viewProvider);
-        context.subscriptions.push(ciResultsManager);
-        void ciResultsManager.initialize();
         const supportedExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.cs', '.go', '.rs'];
         // Initialize baseline when file is opened (before first save)
         // This ensures baseline is ready for first analysis after save
@@ -252,6 +248,18 @@ function activate(context) {
                     }
                     catch (error) {
                         console.error('Auto-analysis on save failed:', error);
+                        const errorMessage = error instanceof Error ? error.message : String(error);
+                        vscode.window.showWarningMessage(`Impact Analyzer: Analysis failed for ${require('path').basename(document.fileName)}. ${errorMessage}`, 'View Details').then(selection => {
+                            if (selection === 'View Details') {
+                                const outputChannel = vscode.window.createOutputChannel('Impact Analyzer');
+                                outputChannel.appendLine(`Analysis failed for ${document.fileName}:`);
+                                outputChannel.appendLine(errorMessage);
+                                if (error instanceof Error && error.stack) {
+                                    outputChannel.appendLine(error.stack);
+                                }
+                                outputChannel.show();
+                            }
+                        });
                     }
                 }
             });
@@ -285,6 +293,8 @@ function activate(context) {
             }
             catch (error) {
                 console.error('[Impact Analyzer] Auto-refresh failed:', error);
+                // Auto-refresh failures are less critical, log but don't show notification
+                // to avoid spamming users during rapid edits
             }
         };
         const registerAutoRefreshListener = () => {
@@ -322,31 +332,16 @@ function activate(context) {
                 refreshConfig = true;
                 refreshAuto = true;
             }
-            if (event.affectsConfiguration('impactAnalyzer.backendUrl') ||
-                event.affectsConfiguration('impactAnalyzer.apiToken') ||
-                event.affectsConfiguration('impactAnalyzer.teamId') ||
-                event.affectsConfiguration('impactAnalyzer.repoFullName') ||
-                event.affectsConfiguration('impactAnalyzer.enableCiPolling') ||
-                event.affectsConfiguration('impactAnalyzer.ciPollingInterval')) {
-                refreshConfig = true;
-                refreshCi = true;
-            }
             if (refreshConfig) {
                 configManager.refresh();
             }
             if (refreshAuto) {
                 registerAutoRefreshListener();
             }
-            if (refreshCi) {
-                ciResultsManager.onConfigurationChanged();
-            }
         });
         context.subscriptions.push(configurationChangeDisposable);
         // Register commands (manual workflow entry points)
         const commands = [
-            vscode.commands.registerCommand('impactAnalyzer.openCiTestLocation', async (payload) => {
-                await viewProvider.openCiTestLocation(payload);
-            }),
             vscode.commands.registerCommand('impactAnalyzer.openDownstreamFile', async (filePath, line) => {
                 const fs = require('fs');
                 const path = require('path');
@@ -536,14 +531,6 @@ function activate(context) {
                 catch (error) {
                     vscode.window.showErrorMessage(`Pre-commit tests failed: ${error}`);
                 }
-            }),
-            vscode.commands.registerCommand('impactAnalyzer.refreshCiResults', async () => {
-                await vscode.window.withProgress({
-                    location: vscode.ProgressLocation.Window,
-                    title: 'Refreshing CI test results...'
-                }, async () => {
-                    await ciResultsManager.refreshCiResults(true);
-                });
             }),
             // Utility commands
             vscode.commands.registerCommand('impactAnalyzer.toggleAutoAnalysis', () => {
