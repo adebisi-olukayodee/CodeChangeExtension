@@ -259,14 +259,19 @@ async function analyzeImpactWithDiff(params, debugLog) {
     console.log(`[PureImpactAnalyzer] projectRoot: ${projectRoot}`);
     console.log(`[PureImpactAnalyzer] impactedExportNames.size: ${impactedExportNames.size}`);
     let downstreamFiles = [];
+    let downstreamWithLines = [];
     if (impactedExportNames.size > 0) {
         console.error(`[PureImpactAnalyzer] Calling findDownstreamComponents with impactedExportNames`);
         downstreamFiles = await dependencyAnalyzer.findDownstreamComponents(afterFilePath, changedCodeAnalysis, Array.from(impactedExportNames), projectRoot);
+        // Also get line numbers for navigation
+        downstreamWithLines = await dependencyAnalyzer.findDownstreamComponentsWithLines(afterFilePath, changedCodeAnalysis, Array.from(impactedExportNames), projectRoot);
         console.error(`[PureImpactAnalyzer] findDownstreamComponents returned ${downstreamFiles.length} files`);
     }
     else {
         console.error(`[PureImpactAnalyzer] Calling findDownstreamComponents WITHOUT impactedExportNames`);
         downstreamFiles = await dependencyAnalyzer.findDownstreamComponents(afterFilePath, changedCodeAnalysis, undefined, projectRoot);
+        // Also get line numbers for navigation
+        downstreamWithLines = await dependencyAnalyzer.findDownstreamComponentsWithLines(afterFilePath, changedCodeAnalysis, undefined, projectRoot);
         console.error(`[PureImpactAnalyzer] findDownstreamComponents returned ${downstreamFiles.length} files`);
     }
     log(`Found ${downstreamFiles.length} downstream files`);
@@ -282,6 +287,8 @@ async function analyzeImpactWithDiff(params, debugLog) {
     // Separate downstream files from test files
     const sourceDownstreamFiles = downstreamFiles.filter(f => !isTestFile(f));
     const testFilesFromDependencyAnalyzer = downstreamFiles.filter(f => isTestFile(f));
+    // Filter line numbers to match filtered downstream files
+    const sourceDownstreamWithLines = downstreamWithLines.filter(f => !isTestFile(f.filePath));
     log(`Filtered ${downstreamFiles.length} files: ${sourceDownstreamFiles.length} source files, ${testFilesFromDependencyAnalyzer.length} test files`);
     // Convert to relative paths
     const relativeDownstreamFiles = sourceDownstreamFiles.map(f => path.relative(projectRoot, f));

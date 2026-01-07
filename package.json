@@ -67,6 +67,11 @@
         "command": "impactAnalyzer.showSettings",
         "title": "Show Settings",
         "category": "Impact Analyzer"
+      },
+      {
+        "command": "impactAnalyzer.openDownstreamFile",
+        "title": "Open Downstream File",
+        "category": "Impact Analyzer"
       }
     ],
     "menus": {

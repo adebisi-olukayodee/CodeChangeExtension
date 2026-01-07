@@ -18,6 +18,7 @@ export interface ImpactAnalysisResult {
     changedModules: string[];
     affectedTests: string[];
     downstreamComponents: string[];
+    downstreamComponentsWithLines?: Array<{ filePath: string; lines: number[] }>;
     confidence: number;
     estimatedTestTime: number;
     coverageImpact: number;

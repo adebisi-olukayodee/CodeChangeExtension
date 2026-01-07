@@ -34,6 +34,7 @@ class ImpactViewProvider {
         this.history = [];
         this.impactAnalyzer = impactAnalyzer;
         this.testRunner = testRunner;
+        this.outputChannel = vscode.window.createOutputChannel('Impact Analyzer Navigation');
     }
     refresh() {
         this._onDidChangeTreeData.fire();
@@ -202,9 +203,178 @@ class ImpactViewProvider {
             }
         }
         else if (testElement.type === 'downstream') {
+            // Get workspace root to resolve relative paths
+            // Try all workspace folders, not just the first one
+            const workspaceFolders = vscode.workspace.workspaceFolders || [];
+            const fs = require('fs');
+            // Show output channel immediately
+            this.outputChannel.clear();
+            this.outputChannel.appendLine(`\n[ImpactViewProvider] ========== Processing downstream components ==========`);
+            this.outputChannel.appendLine(`[ImpactViewProvider] Result file: ${result.filePath}`);
+            this.outputChannel.appendLine(`[ImpactViewProvider] Downstream components count: ${result.downstreamComponents.length}`);
+            this.outputChannel.show();
+            // Try to determine workspace root from result.filePath if available
+            // For example, if result.filePath is C:\create-t3-turbo\packages\ui\src\index.ts
+            // and component is apps\nextjs\src\app\layout.tsx, we need to find the common root
+            let workspaceRoot = '';
+            if (result.filePath) {
+                const resultPath = path.dirname(result.filePath);
+                // Try to find a common parent that would contain both the result file and the component
+                // For monorepos, the root is usually where package.json or multiple apps/packages exist
+                let currentDir = resultPath;
+                for (let i = 0; i < 10; i++) {
+                    const parentDir = path.dirname(currentDir);
+                    if (parentDir === currentDir)
+                        break; // Reached root
+                    // Check if this directory contains common monorepo indicators
+                    const hasPackageJson = fs.existsSync(path.join(parentDir, 'package.json'));
+                    const hasApps = fs.existsSync(path.join(parentDir, 'apps'));
+                    const hasPackages = fs.existsSync(path.join(parentDir, 'packages'));
+                    if (hasPackageJson && (hasApps || hasPackages)) {
+                        workspaceRoot = parentDir;
+                        this.outputChannel.appendLine(`[ImpactViewProvider] ✅ Detected workspace root: ${workspaceRoot}`);
+                        break;
+                    }
+                    currentDir = parentDir;
+                }
+            }
+            // Fallback to workspace folders
+            const defaultWorkspacePath = workspaceRoot || workspaceFolders[0]?.uri.fsPath || '';
+            this.outputChannel.appendLine(`[ImpactViewProvider] Workspace root detection:`);
+            this.outputChannel.appendLine(`  - Detected root: ${workspaceRoot || 'none'}`);
+            this.outputChannel.appendLine(`  - Workspace folders: ${workspaceFolders.map(f => f.uri.fsPath).join(', ') || 'none'}`);
+            this.outputChannel.appendLine(`  - Using root: ${defaultWorkspacePath}`);
+            this.outputChannel.show(); // Show output channel so user can see what's happening
             for (const component of result.downstreamComponents) {
-                const componentItem = new ImpactViewItem(path.basename(component), 'component', vscode.TreeItemCollapsibleState.None);
-                componentItem.filePath = component;
+                // Resolve to absolute path - component might be relative or absolute
+                // Normalize component path separators first (handle Windows backslashes)
+                const normalizedComponent = component.replace(/\\/g, '/');
+                let absolutePath;
+                if (path.isAbsolute(component)) {
+                    absolutePath = path.normalize(component);
+                }
+                else {
+                    // Try resolving relative to detected workspace root first
+                    if (workspaceRoot) {
+                        // Use normalized component with forward slashes, path.resolve will handle it
+                        absolutePath = path.resolve(workspaceRoot, normalizedComponent);
+                        if (fs.existsSync(absolutePath)) {
+                            // Found it!
+                        }
+                        else {
+                            // Try workspace folders
+                            let found = false;
+                            for (const folder of workspaceFolders) {
+                                const candidatePath = path.resolve(folder.uri.fsPath, normalizedComponent);
+                                if (fs.existsSync(candidatePath)) {
+                                    absolutePath = candidatePath;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                absolutePath = path.resolve(defaultWorkspacePath, normalizedComponent);
+                            }
+                        }
+                    }
+                    else {
+                        // Try resolving relative to each workspace folder
+                        let found = false;
+                        absolutePath = path.resolve(defaultWorkspacePath, normalizedComponent); // Initialize with fallback
+                        for (const folder of workspaceFolders) {
+                            const candidatePath = path.resolve(folder.uri.fsPath, normalizedComponent);
+                            if (fs.existsSync(candidatePath)) {
+                                absolutePath = candidatePath;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Normalize path separators (ensure consistent format)
+                absolutePath = path.normalize(absolutePath);
+                // Log for debugging
+                this.outputChannel.appendLine(`\n[ImpactViewProvider] Resolving component: ${component}`);
+                this.outputChannel.appendLine(`  - Normalized component: ${normalizedComponent}`);
+                this.outputChannel.appendLine(`  - Workspace root: ${defaultWorkspacePath}`);
+                this.outputChannel.appendLine(`  - Resolved to: ${absolutePath}`);
+                const fileExists = fs.existsSync(absolutePath);
+                this.outputChannel.appendLine(`  - File exists: ${fileExists}`);
+                // Verify the file exists, if not try alternative path resolutions
+                if (!fileExists) {
+                    this.outputChannel.appendLine(`  - ❌ File not found, trying alternative resolutions...`);
+                    // Try with different path separators
+                    const altPath1 = absolutePath.replace(/\//g, '\\');
+                    const altPath2 = absolutePath.replace(/\\/g, '/');
+                    this.outputChannel.appendLine(`  - Trying altPath1 (backslashes): ${altPath1} (exists: ${fs.existsSync(altPath1)})`);
+                    this.outputChannel.appendLine(`  - Trying altPath2 (forward slashes): ${altPath2} (exists: ${fs.existsSync(altPath2)})`);
+                    if (fs.existsSync(altPath1)) {
+                        absolutePath = altPath1;
+                        this.outputChannel.appendLine(`  - ✅ Found with backslashes: ${absolutePath}`);
+                    }
+                    else if (fs.existsSync(altPath2)) {
+                        absolutePath = altPath2;
+                        this.outputChannel.appendLine(`  - ✅ Found with forward slashes: ${absolutePath}`);
+                    }
+                    else {
+                        // Try resolving from the result's filePath directory
+                        const resultDir = path.dirname(result.filePath);
+                        const altPath3 = path.resolve(resultDir, normalizedComponent);
+                        this.outputChannel.appendLine(`  - Trying result dir: ${altPath3} (exists: ${fs.existsSync(altPath3)})`);
+                        if (fs.existsSync(altPath3)) {
+                            absolutePath = altPath3;
+                            this.outputChannel.appendLine(`  - ✅ Found from result dir: ${absolutePath}`);
+                        }
+                        else {
+                            // Last resort: try resolving from each workspace root with normalized separators
+                            for (const folder of workspaceFolders) {
+                                const candidatePath = path.resolve(folder.uri.fsPath, normalizedComponent);
+                                this.outputChannel.appendLine(`  - Trying workspace folder: ${candidatePath} (exists: ${fs.existsSync(candidatePath)})`);
+                                if (fs.existsSync(candidatePath)) {
+                                    absolutePath = candidatePath;
+                                    this.outputChannel.appendLine(`  - ✅ Found from workspace folder: ${absolutePath}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Find line numbers for this component if available
+                // Try matching by absolute path first, then by relative path
+                const componentWithLines = result.downstreamComponentsWithLines?.find(c => {
+                    let cAbsolute = c.filePath;
+                    if (!path.isAbsolute(cAbsolute)) {
+                        cAbsolute = path.resolve(defaultWorkspacePath, cAbsolute);
+                    }
+                    // Normalize both paths for comparison
+                    const normalizedAbsolute = absolutePath.replace(/\\/g, '/').toLowerCase();
+                    const normalizedC = cAbsolute.replace(/\\/g, '/').toLowerCase();
+                    return normalizedC === normalizedAbsolute || c.filePath === component;
+                });
+                const lineNumbers = componentWithLines?.lines || [];
+                const firstLine = lineNumbers.length > 0 ? lineNumbers[0] : undefined;
+                // Final verification - if file still doesn't exist, log and show output
+                if (!fs.existsSync(absolutePath)) {
+                    this.outputChannel.appendLine(`  - ❌ ERROR: File does not exist at: ${absolutePath}`);
+                    this.outputChannel.appendLine(`  - Component: ${component}`);
+                    this.outputChannel.appendLine(`  - Normalized: ${normalizedComponent}`);
+                    this.outputChannel.appendLine(`  - Workspace root: ${defaultWorkspacePath}`);
+                    this.outputChannel.show();
+                    vscode.window.showErrorMessage(`File not found: ${absolutePath}\nCheck "Impact Analyzer Navigation" output for details.`);
+                }
+                else {
+                    this.outputChannel.appendLine(`  - ✅ File found! Opening: ${absolutePath}`);
+                }
+                const componentItem = new ImpactViewItem(path.basename(absolutePath) + (firstLine ? ` (line ${firstLine})` : ''), 'component', vscode.TreeItemCollapsibleState.None, {
+                    command: 'vscode.open',
+                    title: 'Open File',
+                    arguments: [
+                        vscode.Uri.file(absolutePath),
+                        firstLine !== undefined ? { selection: new vscode.Range(firstLine - 1, 0, firstLine - 1, 0) } : undefined
+                    ].filter(Boolean)
+                });
+                componentItem.filePath = absolutePath;
+                componentItem.lineNumber = firstLine;
                 componentItem.iconPath = new vscode.ThemeIcon('file');
                 items.push(componentItem);
             }

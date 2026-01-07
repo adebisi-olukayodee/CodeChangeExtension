@@ -45,9 +45,23 @@ class SimpleImpactViewProvider {
         this.ciContext = {};
         this.impactAnalyzer = impactAnalyzer;
         this.testRunner = testRunner;
+        this.outputChannel = vscode.window.createOutputChannel('Impact Analyzer Navigation');
     }
     refresh() {
         this._onDidChangeTreeData.fire();
+    }
+    /**
+     * Resolves a file path to an absolute path.
+     * If the path is already absolute, it's normalized and returned.
+     * If relative, it's resolved relative to the workspace root.
+     */
+    resolveWorkspacePath(filePath) {
+        if (path.isAbsolute(filePath)) {
+            return path.normalize(filePath);
+        }
+        const folders = vscode.workspace.workspaceFolders;
+        const root = folders?.[0]?.uri.fsPath ?? process.cwd();
+        return path.normalize(path.resolve(root, filePath));
     }
     getTreeItem(element) {
         return element;
@@ -945,13 +959,52 @@ class SimpleImpactViewProvider {
         // Downstream components that depend on changed code
         if (uniqueDownstream.length > 0) {
             const changedFilePath = result.filePath;
+            // Get line numbers from downstreamComponentsWithLines if available
+            const downstreamWithLines = result.downstreamComponentsWithLines || [];
             for (const component of uniqueDownstream) {
-                // Find the import line in the downstream file that imports from the changed file
-                const importLine = this.findImportLine(component, changedFilePath);
+                // Try to find line numbers from downstreamComponentsWithLines first
+                let usageLine = 0;
+                // Resolve component to absolute path for comparison
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                const workspaceRoot = workspaceFolders && workspaceFolders.length > 0
+                    ? workspaceFolders[0].uri.fsPath
+                    : process.cwd();
+                const componentAbsolute = path.isAbsolute(component)
+                    ? path.normalize(component)
+                    : path.normalize(path.resolve(workspaceRoot, component));
+                const componentWithLines = downstreamWithLines.find((c) => {
+                    if (!c.filePath)
+                        return false;
+                    // Resolve c.filePath to absolute path
+                    const cAbsolute = path.isAbsolute(c.filePath)
+                        ? path.normalize(c.filePath)
+                        : path.normalize(path.resolve(workspaceRoot, c.filePath));
+                    // Normalize both paths (remove case sensitivity for comparison)
+                    const normalizedComponent = componentAbsolute.replace(/\\/g, '/').toLowerCase();
+                    const normalizedC = cAbsolute.replace(/\\/g, '/').toLowerCase();
+                    // Check exact match or if one ends with the other
+                    return normalizedC === normalizedComponent ||
+                        normalizedC.endsWith(normalizedComponent) ||
+                        normalizedComponent.endsWith(normalizedC) ||
+                        // Also check basename match as fallback
+                        path.basename(componentAbsolute).toLowerCase() === path.basename(cAbsolute).toLowerCase();
+                });
+                if (componentWithLines && componentWithLines.lines && componentWithLines.lines.length > 0) {
+                    // Use the first usage line (not import line) - more useful for navigation
+                    usageLine = componentWithLines.lines[0];
+                    console.error(`[SimpleImpactViewProvider] Found line number ${usageLine} for ${component} from downstreamComponentsWithLines`);
+                }
+                else {
+                    // Fallback to finding import line if no usage lines found
+                    usageLine = this.findImportLine(component, changedFilePath);
+                    if (usageLine > 0) {
+                        console.error(`[SimpleImpactViewProvider] Found import line ${usageLine} for ${component} using findImportLine`);
+                    }
+                }
                 breakingIssues.push({
                     severity: '⚠️ Risk',
                     message: `Depends on changed code: ${require('path').basename(component)}`,
-                    line: importLine,
+                    line: usageLine,
                     category: 'Downstream Impact',
                     file: component,
                     recommendedFixes: [
@@ -1275,21 +1328,25 @@ class SimpleImpactViewProvider {
                 // For issues with line numbers, add navigation command
                 if (issue.line > 0 && (issue.file || filePath)) {
                     const targetPath = issue.file || filePath;
+                    const absPath = this.resolveWorkspacePath(targetPath);
+                    // Ensure line is a number
+                    const lineNumber = Number(issue.line);
+                    console.error(`[SimpleImpactViewProvider] Breaking issue line: ${issue.line} -> ${lineNumber} (type: ${typeof lineNumber})`);
+                    // Use custom command that properly handles line numbers
                     issueItem.command = {
-                        command: 'vscode.open',
+                        command: 'impactAnalyzer.openDownstreamFile',
                         title: 'Go to Line',
-                        arguments: [
-                            vscode.Uri.file(targetPath),
-                            { selection: new vscode.Range(issue.line - 1, 0, issue.line - 1, 0) }
-                        ]
+                        arguments: [absPath, lineNumber]
                     };
                 }
                 else if (issue.file) {
                     // For impact issues with file path, open file
+                    const absPath = this.resolveWorkspacePath(issue.file);
+                    // Use custom command for consistency
                     issueItem.command = {
-                        command: 'vscode.open',
+                        command: 'impactAnalyzer.openDownstreamFile',
                         title: 'Open File',
-                        arguments: [vscode.Uri.file(issue.file)]
+                        arguments: [absPath]
                     };
                 }
                 items.push(issueItem);
@@ -1513,10 +1570,202 @@ class SimpleImpactViewProvider {
             }
         }
         else if (detailElement.type === 'downstream') {
+            // Get workspace root to resolve relative paths
+            const workspaceFolders = vscode.workspace.workspaceFolders || [];
+            // Log immediately to verify this code path is executing
+            console.error(`[SimpleImpactViewProvider] ========== DOWNSTREAM TYPE DETECTED ==========`);
+            console.error(`[SimpleImpactViewProvider] safeResult:`, safeResult);
+            console.error(`[SimpleImpactViewProvider] safeResult.downstreamComponents:`, safeResult.downstreamComponents);
+            this.outputChannel.clear();
+            this.outputChannel.appendLine(`\n[SimpleImpactViewProvider] ========== Processing downstream components ==========`);
+            this.outputChannel.appendLine(`[SimpleImpactViewProvider] Result file: ${safeResult.filePath}`);
+            this.outputChannel.appendLine(`[SimpleImpactViewProvider] Downstream components count: ${safeResult.downstreamComponents?.length || 0}`);
+            this.outputChannel.appendLine(`[SimpleImpactViewProvider] Downstream components: ${JSON.stringify(safeResult.downstreamComponents || [], null, 2)}`);
+            this.outputChannel.show();
+            console.error(`[SimpleImpactViewProvider] Processing downstream components: ${safeResult.downstreamComponents?.length || 0}`);
+            // Try to determine workspace root from result.filePath if available
+            let workspaceRoot = '';
+            if (safeResult.filePath) {
+                const resultPath = path.dirname(safeResult.filePath);
+                let currentDir = resultPath;
+                for (let i = 0; i < 10; i++) {
+                    const parentDir = path.dirname(currentDir);
+                    if (parentDir === currentDir)
+                        break; // Reached root
+                    const hasPackageJson = fs.existsSync(path.join(parentDir, 'package.json'));
+                    const hasApps = fs.existsSync(path.join(parentDir, 'apps'));
+                    const hasPackages = fs.existsSync(path.join(parentDir, 'packages'));
+                    if (hasPackageJson && (hasApps || hasPackages)) {
+                        workspaceRoot = parentDir;
+                        this.outputChannel.appendLine(`[SimpleImpactViewProvider] ✅ Detected workspace root: ${workspaceRoot}`);
+                        break;
+                    }
+                    currentDir = parentDir;
+                }
+            }
+            const defaultWorkspacePath = workspaceRoot || workspaceFolders[0]?.uri.fsPath || '';
+            this.outputChannel.appendLine(`[SimpleImpactViewProvider] Using workspace root: ${defaultWorkspacePath}`);
             for (const component of safeResult.downstreamComponents || []) {
-                const componentItem = new ImpactViewItem(require('path').basename(component), 'component', vscode.TreeItemCollapsibleState.None);
+                this.outputChannel.appendLine(`\n[SimpleImpactViewProvider] ========== Processing component: ${component} ==========`);
+                console.error(`[SimpleImpactViewProvider] Processing component: ${component}`);
+                // Normalize component path separators first (handle Windows backslashes)
+                const normalizedComponent = component.replace(/\\/g, '/');
+                let absolutePath;
+                if (path.isAbsolute(component)) {
+                    absolutePath = path.normalize(component);
+                }
+                else {
+                    // Try resolving relative to detected workspace root first
+                    if (workspaceRoot) {
+                        absolutePath = path.resolve(workspaceRoot, normalizedComponent);
+                        if (!fs.existsSync(absolutePath)) {
+                            // Try workspace folders
+                            for (const folder of workspaceFolders) {
+                                const candidatePath = path.resolve(folder.uri.fsPath, normalizedComponent);
+                                if (fs.existsSync(candidatePath)) {
+                                    absolutePath = candidatePath;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        absolutePath = path.resolve(defaultWorkspacePath, normalizedComponent);
+                        for (const folder of workspaceFolders) {
+                            const candidatePath = path.resolve(folder.uri.fsPath, normalizedComponent);
+                            if (fs.existsSync(candidatePath)) {
+                                absolutePath = candidatePath;
+                                break;
+                            }
+                        }
+                    }
+                }
+                absolutePath = path.normalize(absolutePath);
+                // Find line numbers for this component if available
+                const componentWithLines = safeResult.downstreamComponentsWithLines?.find((c) => {
+                    let cAbsolute = c.filePath;
+                    if (!path.isAbsolute(cAbsolute)) {
+                        cAbsolute = path.resolve(defaultWorkspacePath, cAbsolute);
+                    }
+                    const normalizedAbsolute = absolutePath.replace(/\\/g, '/').toLowerCase();
+                    const normalizedC = cAbsolute.replace(/\\/g, '/').toLowerCase();
+                    return normalizedC === normalizedAbsolute || c.filePath === component;
+                });
+                const lineNumbers = componentWithLines?.lines || [];
+                // Ensure firstLine is a number, not undefined
+                const firstLine = lineNumbers.length > 0 ? Number(lineNumbers[0]) : undefined;
+                // Log for debugging
+                this.outputChannel.appendLine(`\n[SimpleImpactViewProvider] Resolving component: ${component}`);
+                this.outputChannel.appendLine(`  - Normalized: ${normalizedComponent}`);
+                this.outputChannel.appendLine(`  - Workspace root: ${defaultWorkspacePath}`);
+                this.outputChannel.appendLine(`  - Resolved to: ${absolutePath}`);
+                const fileExists = fs.existsSync(absolutePath);
+                this.outputChannel.appendLine(`  - File exists: ${fileExists}`);
+                if (firstLine) {
+                    this.outputChannel.appendLine(`  - Line number: ${firstLine}`);
+                }
+                // Verify the file exists, if not try alternative path resolutions
+                if (!fileExists) {
+                    this.outputChannel.appendLine(`  - ❌ File not found, trying alternative resolutions...`);
+                    const altPath1 = absolutePath.replace(/\//g, '\\');
+                    const altPath2 = absolutePath.replace(/\\/g, '/');
+                    if (fs.existsSync(altPath1)) {
+                        absolutePath = altPath1;
+                        this.outputChannel.appendLine(`  - ✅ Found with backslashes: ${absolutePath}`);
+                    }
+                    else if (fs.existsSync(altPath2)) {
+                        absolutePath = altPath2;
+                        this.outputChannel.appendLine(`  - ✅ Found with forward slashes: ${absolutePath}`);
+                    }
+                    else {
+                        const resultDir = path.dirname(safeResult.filePath);
+                        const altPath3 = path.resolve(resultDir, normalizedComponent);
+                        if (fs.existsSync(altPath3)) {
+                            absolutePath = altPath3;
+                            this.outputChannel.appendLine(`  - ✅ Found from result dir: ${absolutePath}`);
+                        }
+                        else {
+                            for (const folder of workspaceFolders) {
+                                const candidatePath = path.resolve(folder.uri.fsPath, normalizedComponent);
+                                if (fs.existsSync(candidatePath)) {
+                                    absolutePath = candidatePath;
+                                    this.outputChannel.appendLine(`  - ✅ Found from workspace folder: ${absolutePath}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Final check before creating command
+                const finalPath = path.normalize(absolutePath);
+                const finalExists = fs.existsSync(finalPath);
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider] Final path check: ${finalPath}`);
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider] Final path exists: ${finalExists}`);
+                console.error(`[SimpleImpactViewProvider] Final path: ${finalPath}, exists: ${finalExists}`);
+                if (!finalExists) {
+                    this.outputChannel.appendLine(`[SimpleImpactViewProvider] ❌ SKIPPING: File does not exist at ${finalPath}`);
+                    this.outputChannel.show();
+                    // Still add the item but with a warning
+                    const errorItem = new ImpactViewItem(path.basename(finalPath) + ' (FILE NOT FOUND)', 'component', vscode.TreeItemCollapsibleState.None);
+                    errorItem.description = `File not found: ${finalPath}`;
+                    errorItem.iconPath = new vscode.ThemeIcon('warning');
+                    items.push(errorItem);
+                    continue;
+                }
+                const componentItem = new ImpactViewItem(path.basename(finalPath) + (firstLine ? ` (line ${firstLine})` : ''), 'component', vscode.TreeItemCollapsibleState.None);
+                // Create URI and verify it's valid
+                let fileUri;
+                try {
+                    fileUri = vscode.Uri.file(finalPath);
+                    this.outputChannel.appendLine(`[SimpleImpactViewProvider] Created URI: ${fileUri.fsPath}`);
+                    this.outputChannel.appendLine(`[SimpleImpactViewProvider] URI scheme: ${fileUri.scheme}, path: ${fileUri.path}`);
+                    console.error(`[SimpleImpactViewProvider] Created URI: ${fileUri.fsPath}`);
+                    console.error(`[SimpleImpactViewProvider] URI toString: ${fileUri.toString()}`);
+                    // Double-check file exists using the URI path
+                    const uriPathExists = fs.existsSync(fileUri.fsPath);
+                    this.outputChannel.appendLine(`[SimpleImpactViewProvider] File exists at URI path: ${uriPathExists}`);
+                    console.error(`[SimpleImpactViewProvider] File exists at URI path: ${uriPathExists}`);
+                    if (!uriPathExists) {
+                        this.outputChannel.appendLine(`[SimpleImpactViewProvider] ❌ WARNING: File does not exist at URI path: ${fileUri.fsPath}`);
+                        console.error(`[SimpleImpactViewProvider] ❌ WARNING: File does not exist at URI path: ${fileUri.fsPath}`);
+                        // Try to find the actual file
+                        const stats = fs.statSync(finalPath);
+                        this.outputChannel.appendLine(`[SimpleImpactViewProvider] But file exists at finalPath: ${finalPath}, isFile: ${stats.isFile()}`);
+                    }
+                }
+                catch (error) {
+                    this.outputChannel.appendLine(`[SimpleImpactViewProvider] ❌ ERROR creating URI: ${error}`);
+                    console.error(`[SimpleImpactViewProvider] ERROR creating URI:`, error);
+                    continue;
+                }
+                // Use a custom command that will log the exact path being opened
+                const commandId = `impactAnalyzer.openDownstreamFile`;
+                // Verify command exists before using it
+                const commands = await vscode.commands.getCommands();
+                const commandExists = commands.includes(commandId);
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider] Command exists: ${commandExists}`);
+                console.error(`[SimpleImpactViewProvider] Command '${commandId}' exists: ${commandExists}`);
+                if (!commandExists) {
+                    this.outputChannel.appendLine(`[SimpleImpactViewProvider] ❌ WARNING: Command ${commandId} not found! Available commands: ${commands.filter(c => c.includes('impactAnalyzer')).join(', ')}`);
+                    console.error(`[SimpleImpactViewProvider] ❌ WARNING: Command ${commandId} not found!`);
+                }
+                componentItem.command = {
+                    command: commandId,
+                    title: 'Open File',
+                    arguments: [finalPath, firstLine]
+                };
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider] ✅ Command set: ${commandId}`);
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider]   - Path: ${finalPath}`);
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider]   - Line: ${firstLine || 'none'} (type: ${typeof firstLine}, isNumber: ${typeof firstLine === 'number'})`);
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider]   - File exists: ${fs.existsSync(finalPath)}`);
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider]   - Command args: [${finalPath}, ${firstLine || 'undefined'}]`);
+                console.error(`[SimpleImpactViewProvider] ✅ Command set: ${commandId} with path: ${finalPath}, line: ${firstLine} (type: ${typeof firstLine})`);
+                console.error(`[SimpleImpactViewProvider] Command object:`, JSON.stringify(componentItem.command, null, 2));
+                componentItem.filePath = finalPath;
                 componentItem.iconPath = new vscode.ThemeIcon('arrow-down');
                 componentItem.description = component;
+                this.outputChannel.appendLine(`[SimpleImpactViewProvider] ✅ Created component item for: ${finalPath}${firstLine ? ` (line ${firstLine})` : ''}`);
+                console.error(`[SimpleImpactViewProvider] ✅ Created component item for: ${finalPath}`);
                 items.push(componentItem);
             }
         }
@@ -1602,13 +1851,14 @@ class SimpleImpactViewProvider {
                         const issueItem = new ImpactViewItem(`Line ${issue.line}: ${issue.message}`, 'issue', vscode.TreeItemCollapsibleState.None);
                         issueItem.iconPath = new vscode.ThemeIcon('warning');
                         issueItem.description = `Line ${issue.line}`;
+                        const absPath = this.resolveWorkspacePath(filePath);
+                        // Ensure line is a number
+                        const lineNumber = Number(issue.line);
+                        // Use custom command that properly handles line numbers
                         issueItem.command = {
-                            command: 'vscode.open',
+                            command: 'impactAnalyzer.openDownstreamFile',
                             title: 'Go to Line',
-                            arguments: [
-                                vscode.Uri.file(filePath),
-                                { selection: new vscode.Range(issue.line - 1, 0, issue.line - 1, 0) }
-                            ]
+                            arguments: [absPath, lineNumber]
                         };
                         items.push(issueItem);
                     }
@@ -1870,9 +2120,32 @@ class SimpleImpactViewProvider {
             // Also try directory-relative import (e.g., './utils' if changedFile is './utils/index.ts')
             const relativeDir = path.relative(downstreamDir, changedDir).replace(/\\/g, '/');
             const relativeDirWithFileName = relativeDir ? `${relativeDir}/${changedFileName}` : changedFileName;
+            // Try to find package name from changed file's package.json
+            let packageName = null;
+            try {
+                let currentDir = changedDir;
+                for (let i = 0; i < 10; i++) {
+                    const packageJsonPath = path.join(currentDir, 'package.json');
+                    if (fs.existsSync(packageJsonPath)) {
+                        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+                        if (packageJson.name) {
+                            packageName = packageJson.name;
+                            break;
+                        }
+                    }
+                    const parentDir = path.dirname(currentDir);
+                    if (parentDir === currentDir)
+                        break;
+                    currentDir = parentDir;
+                }
+            }
+            catch (error) {
+                // Ignore errors reading package.json
+            }
             // Patterns to match:
             // - import ... from './relative/path'
             // - import ... from '../relative/path'
+            // - import ... from '@package/name' (package imports)
             // - import('...') or require('...')
             const importPatterns = [
                 new RegExp(`from\\s+['"]${this.escapeRegex(relativePathWithoutExt)}['"]`),
@@ -1881,6 +2154,11 @@ class SimpleImpactViewProvider {
                 new RegExp(`import\\s*\\(\\s*['"]${this.escapeRegex(relativePathWithoutExt)}['"]`),
                 new RegExp(`require\\s*\\(\\s*['"]${this.escapeRegex(relativePathWithoutExt)}['"]`),
             ];
+            // Add package name pattern if found
+            if (packageName) {
+                const escapedPackageName = this.escapeRegex(packageName);
+                importPatterns.push(new RegExp(`from\\s+['"]${escapedPackageName}['"]`), new RegExp(`import\\s*\\(\\s*['"]${escapedPackageName}['"]`), new RegExp(`require\\s*\\(\\s*['"]${escapedPackageName}['"]`));
+            }
             // Find the first matching import line
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];

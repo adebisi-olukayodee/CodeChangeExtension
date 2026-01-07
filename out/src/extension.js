@@ -347,6 +347,64 @@ function activate(context) {
             vscode.commands.registerCommand('impactAnalyzer.openCiTestLocation', async (payload) => {
                 await viewProvider.openCiTestLocation(payload);
             }),
+            vscode.commands.registerCommand('impactAnalyzer.openDownstreamFile', async (filePath, line) => {
+                const fs = require('fs');
+                const path = require('path');
+                console.error(`[extension] ========== openDownstreamFile CALLED ==========`);
+                console.error(`[extension] Received filePath: ${filePath}`);
+                console.error(`[extension] Received line (raw): ${line} (type: ${typeof line})`);
+                if (!filePath) {
+                    console.error(`[extension] ❌ No filePath provided`);
+                    return;
+                }
+                // Resolve path
+                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+                const absPath = path.isAbsolute(filePath)
+                    ? path.normalize(filePath)
+                    : path.normalize(path.resolve(root, filePath));
+                console.error(`[extension] Resolved path: ${absPath}`);
+                console.error(`[extension] File exists: ${fs.existsSync(absPath)}`);
+                if (!fs.existsSync(absPath)) {
+                    vscode.window.showWarningMessage(`Impact Analyzer: File not found: ${absPath}`);
+                    console.error(`[extension] ❌ File does not exist: ${absPath}`);
+                    return;
+                }
+                const uri = vscode.Uri.file(absPath);
+                // Normalize line: accept strings, clamp, and handle 1-based input.
+                const raw = typeof line === 'string' ? parseInt(line, 10) : line;
+                const requested = Number.isFinite(raw) ? raw : undefined;
+                console.error(`[extension] Line normalization:`);
+                console.error(`  - Raw: ${raw}`);
+                console.error(`  - Requested: ${requested}`);
+                console.error(`  - IsFinite: ${Number.isFinite(raw)}`);
+                const doc = await vscode.workspace.openTextDocument(uri);
+                const editor = await vscode.window.showTextDocument(doc, { preview: false });
+                // If line number is provided, navigate to it (assuming 1-based input from analyzer)
+                if (requested !== undefined && requested > 0) {
+                    // Convert from 1-based to 0-based and clamp
+                    let lineIndex = Math.max(requested - 1, 0);
+                    // Clamp to document length
+                    lineIndex = Math.min(lineIndex, Math.max(doc.lineCount - 1, 0));
+                    console.error(`[extension] Navigating to line:`);
+                    console.error(`  - Requested (1-based): ${requested}`);
+                    console.error(`  - LineIndex (0-based): ${lineIndex}`);
+                    console.error(`  - Document lineCount: ${doc.lineCount}`);
+                    // Get the full line range to highlight the entire line
+                    const line = doc.lineAt(lineIndex);
+                    const startPos = new vscode.Position(lineIndex, 0);
+                    const endPos = new vscode.Position(lineIndex, line.text.length);
+                    const fullLineRange = new vscode.Range(startPos, endPos);
+                    // Select the entire line to highlight it
+                    editor.selection = new vscode.Selection(startPos, endPos);
+                    // Reveal the line in the center of the viewport
+                    editor.revealRange(fullLineRange, vscode.TextEditorRevealType.InCenter);
+                    console.error(`[extension] ✅ Navigated to and highlighted line ${requested} (0-based: ${lineIndex})`);
+                }
+                else {
+                    console.error(`[extension] No line number provided, opening file at top`);
+                }
+                console.error(`[extension] ✅ File opened successfully: ${absPath}`);
+            }),
             // Analysis commands - ONLY way to trigger analysis
             vscode.commands.registerCommand('impactAnalyzer.analyzeCurrentFile', async () => {
                 const activeEditor = vscode.window.activeTextEditor;

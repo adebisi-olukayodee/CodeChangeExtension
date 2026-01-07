@@ -423,6 +423,10 @@ class DependencyAnalyzer {
         return null;
     }
     async findDownstreamComponents(sourceFilePath, codeAnalysis, impactedSymbols, projectRoot) {
+        const results = await this.findDownstreamComponentsWithLines(sourceFilePath, codeAnalysis, impactedSymbols, projectRoot);
+        return results.map(r => r.filePath);
+    }
+    async findDownstreamComponentsWithLines(sourceFilePath, codeAnalysis, impactedSymbols, projectRoot) {
         // CRITICAL: This log MUST appear if this function is called
         console.error(`[DependencyAnalyzer] ========== findDownstreamComponents CALLED ==========`);
         console.error(`[DependencyAnalyzer] sourceFilePath: ${sourceFilePath}`);
@@ -432,7 +436,9 @@ class DependencyAnalyzer {
         if (!projectRoot) {
             console.error(`[DependencyAnalyzer] WARNING: No projectRoot provided, falling back to simple search`);
             console.warn(`[DependencyAnalyzer] No projectRoot provided, falling back to simple search`);
-            return this.findDownstreamComponentsLegacy(sourceFilePath, codeAnalysis, impactedSymbols);
+            const legacyResults = await this.findDownstreamComponentsLegacy(sourceFilePath, codeAnalysis, impactedSymbols);
+            // Convert legacy results to new format (no line numbers available)
+            return legacyResults.map(filePath => ({ filePath, lines: [] }));
         }
         console.log(`[DependencyAnalyzer] Finding downstream components for: ${sourceFilePath}`);
         console.log(`[DependencyAnalyzer] Project root: ${projectRoot}`);
@@ -595,24 +601,36 @@ class DependencyAnalyzer {
             }
         }
         console.log(`[DependencyAnalyzer] Total downstream files (including transitive and re-exports): ${allDownstream.size}`);
-        // Filter by symbol usage if impactedSymbols is provided
+        // Filter by symbol usage if impactedSymbols is provided and collect line numbers
+        const result = [];
         if (impactedSymbols && impactedSymbols.length > 0) {
             console.log(`[DependencyAnalyzer] Filtering by impacted symbols: ${JSON.stringify(impactedSymbols)}`);
-            const filtered = new Set();
             for (const filePath of allDownstream) {
                 // Re-exporting files are always included (they're impacted)
                 if (reExportingFiles.has(filePath)) {
-                    filtered.add(filePath);
+                    result.push({ filePath, lines: [] });
                     continue;
                 }
-                if (this.fileUsesSymbols(filePath, impactedSymbols, normalizedSource)) {
-                    filtered.add(filePath);
+                const symbolUsage = this.fileUsesSymbolsWithLines(filePath, impactedSymbols, sourceFilePath);
+                if (symbolUsage.uses) {
+                    result.push({ filePath, lines: symbolUsage.lines });
                 }
             }
-            console.log(`[DependencyAnalyzer] After symbol filtering: ${filtered.size} files`);
-            return Array.from(filtered);
+            console.log(`[DependencyAnalyzer] After symbol filtering: ${result.length} files`);
+            return result;
         }
-        return Array.from(allDownstream);
+        // No symbol filtering - return all downstream files with import line numbers
+        for (const filePath of allDownstream) {
+            try {
+                const content = fs.readFileSync(filePath, 'utf8');
+                const importLines = this.findImportLines(content, filePath, sourceFilePath);
+                result.push({ filePath, lines: importLines });
+            }
+            catch {
+                result.push({ filePath, lines: [] });
+            }
+        }
+        return result;
     }
     /**
      * Legacy method for when projectRoot is not available
@@ -833,45 +851,61 @@ class DependencyAnalyzer {
      * Check if a file uses any of the specified symbols from the source file
      */
     fileUsesSymbols(filePath, symbolNames, sourceFilePath) {
+        const result = this.fileUsesSymbolsWithLines(filePath, symbolNames, sourceFilePath);
+        return result.lines.length > 0;
+    }
+    /**
+     * Check if file uses symbols and return line numbers where they're used
+     * @returns Object with boolean indicating usage and array of line numbers (1-based)
+     */
+    fileUsesSymbolsWithLines(filePath, symbolNames, sourceFilePath) {
         try {
             const content = fs.readFileSync(filePath, 'utf8');
+            const lines = content.split('\n');
+            const usageLines = new Set();
             // First, check if the file imports from the source file
             if (!this.fileImportsSource(content, filePath, sourceFilePath)) {
-                return false;
+                return { uses: false, lines: [] };
             }
             // Then check if any of the symbols are used in the file
             for (const symbolName of symbolNames) {
                 // Check for named imports: import { symbolName } from ...
                 const namedImportPattern = new RegExp(`import\\s+\\{[^}]*\\b${this.escapeRegex(symbolName)}\\b[^}]*\\}\\s+from`, 'g');
-                if (namedImportPattern.test(content)) {
-                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports symbol '${symbolName}'`);
-                    return true;
+                let match;
+                while ((match = namedImportPattern.exec(content)) !== null) {
+                    const lineNum = content.substring(0, match.index).split('\n').length;
+                    usageLines.add(lineNum);
+                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports symbol '${symbolName}' at line ${lineNum}`);
                 }
                 // Check for default import: import symbolName from ...
                 const defaultImportPattern = new RegExp(`import\\s+${this.escapeRegex(symbolName)}\\s+from`, 'g');
-                if (defaultImportPattern.test(content)) {
-                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as default`);
-                    return true;
+                while ((match = defaultImportPattern.exec(content)) !== null) {
+                    const lineNum = content.substring(0, match.index).split('\n').length;
+                    usageLines.add(lineNum);
+                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as default at line ${lineNum}`);
                 }
                 // Check for namespace import: import * as symbolName from ...
                 const namespaceImportPattern = new RegExp(`import\\s+\\*\\s+as\\s+${this.escapeRegex(symbolName)}\\s+from`, 'g');
-                if (namespaceImportPattern.test(content)) {
-                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as namespace`);
-                    return true;
+                while ((match = namespaceImportPattern.exec(content)) !== null) {
+                    const lineNum = content.substring(0, match.index).split('\n').length;
+                    usageLines.add(lineNum);
+                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} imports '${symbolName}' as namespace at line ${lineNum}`);
                 }
                 // Check for usage: symbolName( or symbolName. or symbolName[
+                // This is the most important - actual usage of the symbol
                 const usagePattern = new RegExp(`\\b${this.escapeRegex(symbolName)}\\s*[\\(\.\\[]`, 'g');
-                if (usagePattern.test(content)) {
-                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} uses symbol '${symbolName}'`);
-                    return true;
+                while ((match = usagePattern.exec(content)) !== null) {
+                    const lineNum = content.substring(0, match.index).split('\n').length;
+                    usageLines.add(lineNum);
+                    console.log(`[DependencyAnalyzer] File ${path.basename(filePath)} uses symbol '${symbolName}' at line ${lineNum}`);
                 }
             }
-            return false;
+            return { uses: usageLines.size > 0, lines: Array.from(usageLines).sort((a, b) => a - b) };
         }
         catch (error) {
             console.error(`[DependencyAnalyzer] Error checking symbol usage in ${filePath}:`, error);
             // If we can't read the file, assume it might use the symbols (conservative approach)
-            return true;
+            return { uses: true, lines: [] };
         }
     }
     escapeRegex(str) {
@@ -896,6 +930,30 @@ class DependencyAnalyzer {
         catch (error) {
             return false;
         }
+    }
+    /**
+     * Find line numbers where a file imports from the source file
+     */
+    findImportLines(content, filePath, sourceFilePath) {
+        const lines = [];
+        const fileDir = path.dirname(filePath);
+        const relativePath = path.relative(fileDir, sourceFilePath).replace(/\\/g, '/');
+        // Try to match various import patterns
+        const importPatterns = [
+            new RegExp(`from\\s+['"]${this.escapeRegex(relativePath)}['"]`, 'g'),
+            new RegExp(`from\\s+['"]\\./${this.escapeRegex(relativePath)}['"]`, 'g'),
+            new RegExp(`from\\s+['"]@[^'"]*['"]`, 'g'), // Package imports
+        ];
+        for (const pattern of importPatterns) {
+            let match;
+            while ((match = pattern.exec(content)) !== null) {
+                const lineNum = content.substring(0, match.index).split('\n').length;
+                if (!lines.includes(lineNum)) {
+                    lines.push(lineNum);
+                }
+            }
+        }
+        return lines.sort((a, b) => a - b);
     }
     /**
      * Direct scan approach: scan all files in project and check if they import the source file
@@ -962,7 +1020,7 @@ class DependencyAnalyzer {
         console.log(`[DependencyAnalyzer] Source relative path: ${sourceRelPath}`);
         // Add re-exporting files to downstream (they're definitely impacted)
         for (const reExportFile of reExportingFiles) {
-            downstreamFiles.push(reExportFile);
+            downstreamFiles.push({ filePath: reExportFile, lines: [] });
             console.log(`[DependencyAnalyzer] ✅ Found re-exporting file: ${path.relative(projectRoot, reExportFile)}`);
         }
         // Check each file
@@ -987,9 +1045,10 @@ class DependencyAnalyzer {
                 if (isDownstream) {
                     // If symbol filtering is enabled, check if the file uses the symbols
                     if (impactedSymbols && impactedSymbols.length > 0) {
-                        if (this.fileUsesSymbols(filePath, impactedSymbols, sourceFilePath)) {
-                            downstreamFiles.push(filePath);
-                            console.log(`[DependencyAnalyzer] ✅ Found downstream file: ${path.relative(projectRoot, filePath)}`);
+                        const symbolUsage = this.fileUsesSymbolsWithLines(filePath, impactedSymbols, sourceFilePath);
+                        if (symbolUsage.uses) {
+                            downstreamFiles.push({ filePath, lines: symbolUsage.lines });
+                            console.log(`[DependencyAnalyzer] ✅ Found downstream file: ${path.relative(projectRoot, filePath)} (lines: ${symbolUsage.lines.join(', ')})`);
                         }
                         else {
                             console.log(`[DependencyAnalyzer] ⚠️ File imports source but doesn't use symbols: ${path.relative(projectRoot, filePath)}`);
@@ -997,8 +1056,10 @@ class DependencyAnalyzer {
                     }
                     else {
                         // No symbol filtering - include all files that import the source
-                        downstreamFiles.push(filePath);
-                        console.log(`[DependencyAnalyzer] ✅ Found downstream file (no symbol filter): ${path.relative(projectRoot, filePath)}`);
+                        // Still try to find line numbers for the import statement
+                        const importLines = this.findImportLines(content, filePath, sourceFilePath);
+                        downstreamFiles.push({ filePath, lines: importLines });
+                        console.log(`[DependencyAnalyzer] ✅ Found downstream file (no symbol filter): ${path.relative(projectRoot, filePath)} (lines: ${importLines.join(', ')})`);
                     }
                 }
                 else {

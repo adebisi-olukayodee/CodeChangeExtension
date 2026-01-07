@@ -324,9 +324,18 @@ export async function analyzeImpactWithDiff(
     console.log(`[PureImpactAnalyzer] impactedExportNames.size: ${impactedExportNames.size}`);
     
     let downstreamFiles: string[] = [];
+    let downstreamWithLines: Array<{ filePath: string; lines: number[] }> = [];
+    
     if (impactedExportNames.size > 0) {
         console.error(`[PureImpactAnalyzer] Calling findDownstreamComponents with impactedExportNames`);
         downstreamFiles = await dependencyAnalyzer.findDownstreamComponents(
+            afterFilePath,
+            changedCodeAnalysis,
+            Array.from(impactedExportNames),
+            projectRoot
+        );
+        // Also get line numbers for navigation
+        downstreamWithLines = await dependencyAnalyzer.findDownstreamComponentsWithLines(
             afterFilePath,
             changedCodeAnalysis,
             Array.from(impactedExportNames),
@@ -336,6 +345,13 @@ export async function analyzeImpactWithDiff(
     } else {
         console.error(`[PureImpactAnalyzer] Calling findDownstreamComponents WITHOUT impactedExportNames`);
         downstreamFiles = await dependencyAnalyzer.findDownstreamComponents(
+            afterFilePath,
+            changedCodeAnalysis,
+            undefined,
+            projectRoot
+        );
+        // Also get line numbers for navigation
+        downstreamWithLines = await dependencyAnalyzer.findDownstreamComponentsWithLines(
             afterFilePath,
             changedCodeAnalysis,
             undefined,
@@ -361,6 +377,9 @@ export async function analyzeImpactWithDiff(
     // Separate downstream files from test files
     const sourceDownstreamFiles = downstreamFiles.filter(f => !isTestFile(f));
     const testFilesFromDependencyAnalyzer = downstreamFiles.filter(f => isTestFile(f));
+    
+    // Filter line numbers to match filtered downstream files
+    const sourceDownstreamWithLines = downstreamWithLines.filter(f => !isTestFile(f.filePath));
     
     log(`Filtered ${downstreamFiles.length} files: ${sourceDownstreamFiles.length} source files, ${testFilesFromDependencyAnalyzer.length} test files`);
     
