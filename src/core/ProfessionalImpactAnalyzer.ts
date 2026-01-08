@@ -37,7 +37,9 @@ export interface ImpactAnalysisResult {
     changedClasses: string[];
     changedModules: string[];
     affectedTests: string[];
+    heuristicTests?: string[]; // Tests matched using heuristics (when no symbols provided)
     downstreamComponents: string[];
+    downstreamComponentsWithLines?: Array<{ filePath: string; lines: number[] }>;
     confidence: number;
     estimatedTestTime: number;
     coverageImpact: number;

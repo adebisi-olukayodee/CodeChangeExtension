@@ -219,7 +219,7 @@ The extension detects the following breaking changes in TypeScript/JavaScript:
 - ❌ **Runtime correctness** - Only analyzes types/signatures, not behavior
 - ❌ **External consumers** - Only analyzes workspace-local code
 - ❌ **JavaScript breaking change detection** - Not available for `.js` files (no type information)
-- ❌ **Test impact certainty** - Test discovery uses heuristics, not guaranteed
+- ❌ **Test impact certainty** - Test discovery uses heuristics when no changed symbols are detected, not guaranteed
 
 ### JavaScript Files
 JavaScript files have **limited support**:
@@ -227,8 +227,26 @@ JavaScript files have **limited support**:
 - **Breaking change detection is not available** - JavaScript lacks type information needed for accurate API change detection
 - Dependency detection uses import patterns and heuristics, not type checking
 - Symbol reference finding returns empty results (limitation of JS analysis)
+- **Test analysis uses regex heuristics** - JavaScript test files are analyzed using pattern matching (may have false positives/negatives), while TypeScript uses AST analysis (more accurate)
 
 **Recommendation**: Use TypeScript (`.ts`/`.tsx`) files for full analysis capabilities. The extension works best with TypeScript projects.
+
+### Test Impact Analysis
+
+**TypeScript Tests** (`.test.ts`, `.spec.tsx`, etc.):
+- Uses AST-based analysis for accurate symbol detection
+- Only flags tests that actually import and use changed symbols
+- Handles namespace imports correctly (e.g., `import * as ns from ...; ns.symbol()`)
+
+**JavaScript Tests** (`.test.js`, `.spec.jsx`, etc.):
+- Uses regex-based pattern matching (best-effort)
+- May have false positives (tests mentioned in strings/comments) or false negatives (complex patterns)
+- Namespace usage detection is supported but less reliable than TypeScript
+
+**When No Changed Symbols Are Detected**:
+- Test matches are labeled as "heuristic" in the UI
+- These matches require the test to import the changed file, but symbol-level verification is not possible
+- Results should be treated as best-effort indicators, not definitive
 
 ## 🆘 Support
 

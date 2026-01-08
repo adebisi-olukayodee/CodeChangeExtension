@@ -1152,14 +1152,22 @@ export class SimpleImpactViewProvider implements vscode.TreeDataProvider<ImpactV
                 noTestsItem.tooltip = 'The analysis did not find any test files that import or reference the changed code in this workspace.';
                 items.push(noTestsItem);
             } else {
+                const heuristicTests = safeResult.heuristicTests || [];
                 for (const test of affectedTests) {
+                    const isHeuristic = heuristicTests.includes(test);
+                    const testName = require('path').basename(test);
                     const testItem = new ImpactViewItem(
-                        require('path').basename(test),
+                        isHeuristic ? `⚠️ ${testName} (heuristic)` : testName,
                         'test',
                         vscode.TreeItemCollapsibleState.None
                     );
                     testItem.iconPath = new vscode.ThemeIcon('beaker');
-                    testItem.description = test;
+                    testItem.description = isHeuristic 
+                        ? `${test} (matched using heuristics - may not actually use changed symbols)`
+                        : test;
+                    testItem.tooltip = isHeuristic
+                        ? 'This test was matched using heuristics because no specific changed symbols were detected. It may not actually use the changed code.'
+                        : 'Test that imports and uses changed code';
                     items.push(testItem);
                 }
             }

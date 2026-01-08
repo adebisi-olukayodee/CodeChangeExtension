@@ -73,7 +73,8 @@ async function analyzeImpactWithDiff(params, debugLog) {
         log(`========================================`);
         return {
             report: (0, ImpactReport_1.createEmptyReport)(file),
-            snapshotDiff: undefined
+            snapshotDiff: undefined,
+            heuristicTests: []
         };
     }
     log(`⚠️ Before !== After, analyzing changes...`);
@@ -312,15 +313,20 @@ async function analyzeImpactWithDiff(params, debugLog) {
     }
     // Strategy 3: Try TestFinder for additional tests that import the file (TS type references, etc.)
     // Pass changed symbols for symbol-aware filtering
+    const heuristicTestMatches = new Set();
     try {
         const changedSymbols = Array.from(impactedExportNames);
-        const testFinderResults = await testFinder.findAffectedTests(fullFilePath, changedCodeAnalysis, changedSymbols.length > 0 ? changedSymbols : undefined);
+        const testFinderResult = await testFinder.findAffectedTestsWithMetadata(fullFilePath, changedCodeAnalysis, changedSymbols.length > 0 ? changedSymbols : undefined);
         // Only include tests from TestFinder if they have proven imports
         // TestFinder's filterRelevantTests already checks for imports, so include those
-        for (const testFile of testFinderResults) {
+        for (const testFile of testFinderResult.testFiles) {
             // Verify it actually imports the source (TestFinder should have filtered, but double-check)
             if (await testFileImportsSourceFile(testFile, fullFilePath, projectRoot)) {
                 highConfidenceTests.add(testFile);
+                // Track heuristic matches
+                if (testFinderResult.heuristicMatches.has(testFile)) {
+                    heuristicTestMatches.add(testFile);
+                }
             }
         }
     }
@@ -331,6 +337,8 @@ async function analyzeImpactWithDiff(params, debugLog) {
         // The fallback already filters by imports, so include those
         for (const testFile of fallbackTests) {
             highConfidenceTests.add(testFile);
+            // Fallback tests are considered heuristic (no symbol information)
+            heuristicTestMatches.add(testFile);
         }
     }
     // Gate: Only include high-confidence tests with proven dependencies
@@ -346,6 +354,7 @@ async function analyzeImpactWithDiff(params, debugLog) {
     }
     // Convert to relative paths
     const relativeTests = affectedTests.map(f => path.relative(projectRoot, f));
+    const relativeHeuristicTests = Array.from(heuristicTestMatches).map(f => path.relative(projectRoot, f));
     // Build issues list
     const issues = [
         ...relativeDownstreamFiles.map(target => ({
@@ -370,7 +379,8 @@ async function analyzeImpactWithDiff(params, debugLog) {
     };
     return {
         report,
-        snapshotDiff
+        snapshotDiff,
+        heuristicTests: relativeHeuristicTests
     };
 }
 exports.analyzeImpactWithDiff = analyzeImpactWithDiff;

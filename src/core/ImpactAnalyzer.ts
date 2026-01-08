@@ -8,7 +8,7 @@ import { DependencyAnalyzer } from '../analyzers/DependencyAnalyzer';
 import { GitAnalyzer } from '../analyzers/GitAnalyzer';
 import { ASTImpactAnalyzer } from '../analyzers/ASTImpactAnalyzer';
 import { ProfessionalImpactAnalyzer } from '../analyzers/ProfessionalImpactAnalyzer';
-import { analyzeImpact } from './PureImpactAnalyzer';
+import { analyzeImpact, analyzeImpactWithDiff } from './PureImpactAnalyzer';
 import { ImpactReport } from '../types/ImpactReport';
 
 export interface ImpactAnalysisResult {
@@ -17,6 +17,7 @@ export interface ImpactAnalysisResult {
     changedClasses: string[];
     changedModules: string[];
     affectedTests: string[];
+    heuristicTests?: string[]; // Tests matched using heuristics (when no symbols provided)
     downstreamComponents: string[];
     downstreamComponentsWithLines?: Array<{ filePath: string; lines: number[] }>;
     confidence: number;

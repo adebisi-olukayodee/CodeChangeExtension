@@ -49,6 +49,7 @@ export type DebugLogFunction = (message: string) => void;
 export interface AnalyzeImpactResult {
     report: ImpactReport;
     snapshotDiff?: SnapshotDiff;
+    heuristicTests?: string[]; // Tests matched using heuristics (when no symbols provided)
 }
 
 export async function analyzeImpact(
@@ -89,7 +90,8 @@ export async function analyzeImpactWithDiff(
         log(`========================================`);
         return {
             report: createEmptyReport(file),
-            snapshotDiff: undefined
+            snapshotDiff: undefined,
+            heuristicTests: []
         };
     }
 
@@ -410,19 +412,24 @@ export async function analyzeImpactWithDiff(
     
     // Strategy 3: Try TestFinder for additional tests that import the file (TS type references, etc.)
     // Pass changed symbols for symbol-aware filtering
+    const heuristicTestMatches = new Set<string>();
     try {
         const changedSymbols = Array.from(impactedExportNames);
-        const testFinderResults = await testFinder.findAffectedTests(
+        const testFinderResult = await testFinder.findAffectedTestsWithMetadata(
             fullFilePath,
             changedCodeAnalysis,
             changedSymbols.length > 0 ? changedSymbols : undefined
         );
         // Only include tests from TestFinder if they have proven imports
         // TestFinder's filterRelevantTests already checks for imports, so include those
-        for (const testFile of testFinderResults) {
+        for (const testFile of testFinderResult.testFiles) {
             // Verify it actually imports the source (TestFinder should have filtered, but double-check)
             if (await testFileImportsSourceFile(testFile, fullFilePath, projectRoot)) {
                 highConfidenceTests.add(testFile);
+                // Track heuristic matches
+                if (testFinderResult.heuristicMatches.has(testFile)) {
+                    heuristicTestMatches.add(testFile);
+                }
             }
         }
     } catch (error) {
@@ -432,6 +439,8 @@ export async function analyzeImpactWithDiff(
         // The fallback already filters by imports, so include those
         for (const testFile of fallbackTests) {
             highConfidenceTests.add(testFile);
+            // Fallback tests are considered heuristic (no symbol information)
+            heuristicTestMatches.add(testFile);
         }
     }
     
@@ -449,6 +458,9 @@ export async function analyzeImpactWithDiff(
     
     // Convert to relative paths
     const relativeTests = affectedTests.map(f => 
+        path.relative(projectRoot, f)
+    );
+    const relativeHeuristicTests = Array.from(heuristicTestMatches).map(f => 
         path.relative(projectRoot, f)
     );
 
@@ -478,7 +490,8 @@ export async function analyzeImpactWithDiff(
 
     return {
         report,
-        snapshotDiff
+        snapshotDiff,
+        heuristicTests: relativeHeuristicTests
     };
 }
 

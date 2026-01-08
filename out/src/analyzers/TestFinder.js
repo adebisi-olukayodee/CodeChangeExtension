@@ -50,18 +50,32 @@ class TestFinder {
      * @returns Array of test file paths with match metadata
      */
     async findAffectedTests(sourceFilePath, codeAnalysis, changedSymbols) {
+        const result = await this.findAffectedTestsWithMetadata(sourceFilePath, codeAnalysis, changedSymbols);
+        return result.testFiles;
+    }
+    /**
+     * Find affected tests with metadata about heuristic matches
+     * @param sourceFilePath Path to the source file that changed
+     * @param codeAnalysis Analysis result for the source file
+     * @param changedSymbols Optional list of specific changed symbols (functions/classes)
+     * @returns TestFinderResult with test files and heuristic match metadata
+     */
+    async findAffectedTestsWithMetadata(sourceFilePath, codeAnalysis, changedSymbols) {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
-            return [];
+            return { testFiles: [], heuristicMatches: new Set() };
         }
         const workspacePath = workspaceFolder.uri.fsPath;
         const allTestFiles = await this.findAllTestFiles(workspacePath);
         // Use symbol-aware filtering when we have changed symbols
         if (changedSymbols && changedSymbols.length > 0) {
-            return this.filterTestsBySymbols(allTestFiles, sourceFilePath, changedSymbols);
+            const testFiles = this.filterTestsBySymbols(allTestFiles, sourceFilePath, changedSymbols);
+            // All matches are symbol-aware when symbols are provided
+            return { testFiles, heuristicMatches: new Set() };
         }
-        // Fallback: filter by file imports and code references
-        return this.filterTestsByContent(allTestFiles, sourceFilePath, codeAnalysis);
+        // Fallback: filter by file imports and code references (all are heuristic)
+        const testFiles = this.filterTestsByContent(allTestFiles, sourceFilePath, codeAnalysis);
+        return { testFiles, heuristicMatches: new Set(testFiles) };
     }
     /**
      * Find all test files in the workspace
@@ -106,7 +120,7 @@ class TestFinder {
                 }
                 else {
                     // Improved regex-based analysis for JavaScript (ignores strings/comments)
-                    const result = this.testFileUsesSymbolsRegex(content, changedSymbols);
+                    const result = this.testFileUsesSymbolsRegex(content, testFile, changedSymbols, sourceFilePath);
                     usesSymbols = result.uses;
                     matchedSymbols = result.matchedSymbols;
                 }
@@ -222,7 +236,7 @@ class TestFinder {
         catch (error) {
             console.error(`[TestFinder] Error parsing TypeScript AST for ${testFilePath}:`, error);
             // Fallback to regex if AST parsing fails
-            return this.testFileUsesSymbolsRegex(content, symbolNames);
+            return this.testFileUsesSymbolsRegex(content, testFilePath, symbolNames, sourceFilePath);
         }
     }
     /**
@@ -293,11 +307,26 @@ class TestFinder {
     /**
      * Improved regex-based symbol usage detection for JavaScript files
      * Attempts to ignore strings and comments
+     * Also handles namespace usage (e.g., ns.symbolName)
      */
-    testFileUsesSymbolsRegex(content, symbolNames) {
+    testFileUsesSymbolsRegex(content, testFilePath, symbolNames, sourceFilePath) {
         const matchedSymbols = new Set();
+        const importedNamespaces = new Set();
         // Remove strings and comments to reduce false positives
         const cleanedContent = this.removeStringsAndComments(content);
+        // First, collect imported namespaces from the source file
+        // Pattern: import * as namespaceName from 'sourcePath'
+        const namespaceImportPattern = /import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g;
+        let match;
+        while ((match = namespaceImportPattern.exec(content)) !== null) {
+            const namespaceName = match[1];
+            const importPath = match[2];
+            // Check if this import is from the source file
+            if (this.isImportFromSource(importPath, testFilePath, sourceFilePath)) {
+                importedNamespaces.add(namespaceName);
+                (0, Logger_1.debugLog)(`[TestFinder] Found namespace import: ${namespaceName} from source file`);
+            }
+        }
         for (const symbolName of symbolNames) {
             const escaped = this.escapeRegex(symbolName);
             // Check for named imports: import { symbolName } from ...
@@ -313,15 +342,25 @@ class TestFinder {
                 continue;
             }
             // Check for namespace import: import * as symbolName from ...
-            const namespaceImportPattern = new RegExp(`import\\s+\\*\\s+as\\s+${escaped}\\s+from`, 'g');
-            if (namespaceImportPattern.test(content)) {
+            // (This is when the symbol itself is the namespace name - less common)
+            const namespaceAsSymbolPattern = new RegExp(`import\\s+\\*\\s+as\\s+${escaped}\\s+from`, 'g');
+            if (namespaceAsSymbolPattern.test(content)) {
                 matchedSymbols.add(symbolName);
                 continue;
             }
-            // Check for usage in cleaned content (ignoring strings/comments): symbolName( or symbolName. or symbolName[
+            // Check for direct usage in cleaned content (ignoring strings/comments): symbolName( or symbolName. or symbolName[
             const usagePattern = new RegExp(`\\b${escaped}\\s*[\\(\.\\[]`, 'g');
             if (usagePattern.test(cleanedContent)) {
                 matchedSymbols.add(symbolName);
+            }
+            // Check for namespace usage: namespaceName.symbolName
+            for (const namespaceName of importedNamespaces) {
+                const namespaceUsagePattern = new RegExp(`\\b${this.escapeRegex(namespaceName)}\\.${escaped}\\s*[\\(\\[]`, 'g');
+                if (namespaceUsagePattern.test(cleanedContent)) {
+                    matchedSymbols.add(symbolName);
+                    (0, Logger_1.debugLog)(`[TestFinder] Found namespace usage: ${namespaceName}.${symbolName}`);
+                    break; // Found via namespace, no need to check other namespaces for this symbol
+                }
             }
         }
         return {
