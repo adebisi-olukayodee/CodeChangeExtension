@@ -306,18 +306,44 @@ async function analyzeImpactWithDiff(params, debugLog) {
     }
     const downstreamFiles = downstreamFilesWithLines.map(item => item.file);
     log(`Found ${downstreamFiles.length} downstream files`);
+    // Detect test framework from repository
+    const { TestFrameworkDetector } = require('../utils/TestFrameworkDetector');
+    const testFrameworkDetector = new TestFrameworkDetector();
+    const testFrameworkInfo = testFrameworkDetector.detect(projectRoot);
+    log(`[PureImpactAnalyzer] Detected test framework: ${testFrameworkInfo.framework} (confidence: ${testFrameworkInfo.confidence})`);
+    if (testFrameworkInfo.evidence.length > 0) {
+        log(`[PureImpactAnalyzer] Test framework evidence: ${testFrameworkInfo.evidence.join('; ')}`);
+    }
     // Filter out test files from downstream files (test files should only be in affectedTests)
     const isTestFile = (filePath) => {
         const normalized = filePath.replace(/\\/g, '/');
-        const isTest = (normalized.includes('/test/') ||
+        // Fast path: Check naming patterns first
+        const nameMatch = (normalized.includes('/test/') ||
             normalized.includes('/tests/') ||
             normalized.includes('/__tests__/') ||
             /\.test\.(ts|tsx|js|jsx)$/i.test(normalized) ||
             /\.spec\.(ts|tsx|js|jsx)$/i.test(normalized));
-        if (isTest) {
-            log(`[PureImpactAnalyzer] File classified as test: ${normalized}`);
+        if (nameMatch) {
+            log(`[PureImpactAnalyzer] File classified as test (naming): ${normalized}`);
+            return true;
         }
-        return isTest;
+        // Slow path: Check content if naming doesn't match (only if framework detected)
+        if (testFrameworkInfo.framework !== 'unknown') {
+            try {
+                const content = fs.readFileSync(filePath, 'utf8');
+                const testPatterns = testFrameworkDetector.getTestPatterns(testFrameworkInfo.framework);
+                // Need at least 2 test patterns to avoid false positives
+                const matches = testPatterns.filter((p) => p.test(content)).length;
+                if (matches >= 2) {
+                    log(`[PureImpactAnalyzer] File classified as test (content, ${testFrameworkInfo.framework}): ${normalized}`);
+                    return true;
+                }
+            }
+            catch (error) {
+                // Can't read file, skip content check
+            }
+        }
+        return false;
     };
     // Separate downstream files from test files (with line numbers)
     const sourceDownstreamFilesWithLines = downstreamFilesWithLines.filter(item => !isTestFile(item.file));

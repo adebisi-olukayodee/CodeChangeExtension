@@ -37,6 +37,7 @@ exports.TestFinder = void 0;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const TestFrameworkDetector_1 = require("../utils/TestFrameworkDetector");
 class TestFinder {
     constructor() {
         this.testPatterns = [
@@ -49,6 +50,7 @@ class TestFinder {
             'test', 'tests', '__tests__', 'spec', 'specs',
             'test-src', 'src/test', 'src/tests'
         ];
+        this.testFrameworkDetector = new TestFrameworkDetector_1.TestFrameworkDetector();
     }
     async findAffectedTests(sourceFilePath, codeAnalysis) {
         const testFiles = [];
@@ -76,20 +78,20 @@ class TestFinder {
         const uniqueTestFiles = [...new Set(testFiles)];
         return this.filterRelevantTests(uniqueTestFiles, sourceFilePath, codeAnalysis);
     }
-    async findTestFilesInDirectory(dirPath, sourceFileName) {
+    async findTestFilesInDirectory(dirPath, sourceFileName, workspacePath) {
         const testFiles = [];
         try {
             const files = fs.readdirSync(dirPath);
             for (const file of files) {
                 const filePath = path.join(dirPath, file);
                 const stat = fs.statSync(filePath);
-                if (stat.isFile() && this.isTestFile(file)) {
+                if (stat.isFile() && this.isTestFile(filePath, workspacePath)) {
                     if (this.isRelatedTestFile(file, sourceFileName)) {
                         testFiles.push(filePath);
                     }
                 }
                 else if (stat.isDirectory()) {
-                    testFiles.push(...await this.findTestFilesInDirectory(filePath, sourceFileName));
+                    testFiles.push(...await this.findTestFilesInDirectory(filePath, sourceFileName, workspacePath));
                 }
             }
         }
@@ -103,7 +105,7 @@ class TestFinder {
         const sourceFileName = path.basename(sourceFilePath, path.extname(sourceFilePath));
         try {
             await this.walkDirectory(workspacePath, (filePath) => {
-                if (this.isTestFile(filePath)) {
+                if (this.isTestFile(filePath, workspacePath)) {
                     try {
                         const content = fs.readFileSync(filePath, 'utf8');
                         // Check if test file imports the source file
@@ -132,7 +134,7 @@ class TestFinder {
         const testFiles = [];
         try {
             await this.walkDirectory(workspacePath, (filePath) => {
-                if (this.isTestFile(filePath)) {
+                if (this.isTestFile(filePath, workspacePath)) {
                     const testFileName = path.basename(filePath, path.extname(filePath));
                     if (this.isRelatedTestFile(testFileName, sourceFileName)) {
                         testFiles.push(filePath);
@@ -165,9 +167,31 @@ class TestFinder {
             console.error(`Error walking directory ${dirPath}:`, error);
         }
     }
-    isTestFile(filePath) {
+    isTestFile(filePath, workspacePath) {
         const fileName = path.basename(filePath);
-        return this.testPatterns.some(pattern => pattern.test(fileName));
+        // Fast path: Check naming patterns first
+        if (this.testPatterns.some(pattern => pattern.test(fileName))) {
+            return true;
+        }
+        // Slow path: Check content if naming doesn't match (only if framework detected)
+        if (workspacePath) {
+            try {
+                const testFrameworkInfo = this.testFrameworkDetector.detect(workspacePath);
+                if (testFrameworkInfo.framework !== 'unknown') {
+                    const content = fs.readFileSync(filePath, 'utf8');
+                    const testPatterns = this.testFrameworkDetector.getTestPatterns(testFrameworkInfo.framework);
+                    // Need at least 2 test patterns to avoid false positives
+                    const matches = testPatterns.filter((p) => p.test(content)).length;
+                    if (matches >= 2) {
+                        return true;
+                    }
+                }
+            }
+            catch (error) {
+                // Can't read file or detect framework, skip content check
+            }
+        }
+        return false;
     }
     isRelatedTestFile(testFileName, sourceFileName) {
         // Remove test/spec suffixes

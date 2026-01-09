@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import * as child_process from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
+import { TestFrameworkDetector, TestFramework } from '../utils/TestFrameworkDetector';
+import { PackageManagerDetector } from '../utils/PackageManagerDetector';
 
 export interface TestResult {
     testFile: string;
@@ -15,9 +18,13 @@ export interface TestResult {
 export class TestRunner {
     private outputChannel: vscode.OutputChannel;
     private testResults: TestResult[] = [];
+    private testFrameworkDetector: TestFrameworkDetector;
+    private packageManagerDetector: PackageManagerDetector;
 
     constructor() {
         this.outputChannel = vscode.window.createOutputChannel('Impact Analyzer - Test Runner');
+        this.testFrameworkDetector = new TestFrameworkDetector();
+        this.packageManagerDetector = new PackageManagerDetector();
     }
 
     async runTests(testFiles: string[]): Promise<TestResult[]> {
@@ -51,18 +58,35 @@ export class TestRunner {
     private async runSingleTest(testFile: string): Promise<TestResult> {
         const startTime = Date.now();
         
-        // Determine test framework and run appropriate command
-        const framework = this.detectTestFramework(testFile);
-        const command = this.getTestCommand(framework, testFile);
+        // Find project root by looking for package.json (more reliable than workspace folder)
+        const projectRoot = this.findProjectRoot(testFile);
         
         this.outputChannel.appendLine(`\nRunning test: ${testFile}`);
-        this.outputChannel.appendLine(`Framework: ${framework}`);
+        this.outputChannel.appendLine(`Project Root: ${projectRoot}`);
+        
+        // Detect package manager
+        const pmInfo = this.packageManagerDetector.detect(projectRoot);
+        
+        // Detect test framework from repository (not just file content)
+        const frameworkInfo = this.testFrameworkDetector.detect(projectRoot);
+        const framework = frameworkInfo.framework;
+        
+        // Get test command using package manager and framework
+        const command = this.getTestCommand(framework, testFile, projectRoot, pmInfo.manager);
+        
+        this.outputChannel.appendLine(`Package Manager: ${pmInfo.manager}`);
+        this.outputChannel.appendLine(`Framework: ${framework} (confidence: ${frameworkInfo.confidence})`);
+        if (frameworkInfo.evidence.length > 0) {
+            this.outputChannel.appendLine(`Framework Evidence: ${frameworkInfo.evidence.join('; ')}`);
+        }
         this.outputChannel.appendLine(`Command: ${command}`);
         
         return new Promise((resolve, reject) => {
+            // Use projectRoot (where package.json is) as working directory, not workspace folder
+            // This ensures we run tests in the correct project context
             const process = child_process.spawn(command, [], {
                 shell: true,
-                cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+                cwd: projectRoot, // Use detected project root, not workspace folder
                 stdio: ['pipe', 'pipe', 'pipe']
             });
 
@@ -85,15 +109,23 @@ export class TestRunner {
                 const duration = Date.now() - startTime;
                 const status = this.determineTestStatus(code || 0, stdout, stderr);
                 
+                // Parse test output to extract error details
+                const parsedError = this.parseTestOutput(stdout + stderr, framework, testFile);
+                
                 const result: TestResult = {
                     testFile,
+                    testCase: parsedError.testCase,
                     status,
                     duration,
-                    errorMessage: status === 'failed' || status === 'error' ? stderr : undefined,
-                    output: stdout
+                    errorMessage: parsedError.errorMessage || (status === 'failed' || status === 'error' ? stderr : undefined),
+                    stackTrace: parsedError.stackTrace,
+                    output: stdout + stderr
                 };
 
                 this.outputChannel.appendLine(`\nTest completed with status: ${status} (${duration}ms)`);
+                if (result.errorMessage) {
+                    this.outputChannel.appendLine(`Error: ${result.errorMessage}`);
+                }
                 resolve(result);
             });
 
@@ -104,83 +136,139 @@ export class TestRunner {
         });
     }
 
-    private detectTestFramework(testFile: string): string {
-        const fileName = path.basename(testFile).toLowerCase();
-        const ext = path.extname(testFile).toLowerCase();
+    /**
+     * Find project root by looking for package.json
+     * Walks up the directory tree until it finds package.json
+     */
+    private findProjectRoot(filePath: string): string {
+        let currentDir = path.dirname(filePath);
+        const root = path.parse(currentDir).root; // Get drive root (C:\) or / for Unix
         
+        while (currentDir !== root) {
+            const packageJsonPath = path.join(currentDir, 'package.json');
+            if (fs.existsSync(packageJsonPath)) {
+                return currentDir;
+            }
+            const parentDir = path.dirname(currentDir);
+            if (parentDir === currentDir) {
+                break; // Reached root
+            }
+            currentDir = parentDir;
+        }
+        
+        // Fallback: Use workspace folder or file's directory
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        return workspaceFolder?.uri.fsPath || path.dirname(filePath);
+    }
+
+    /**
+     * Detect framework from test file content (fallback when repo detection fails)
+     */
+    private detectFrameworkFromFile(testFile: string): TestFramework {
         try {
-            const content = require('fs').readFileSync(testFile, 'utf8');
+            const content = fs.readFileSync(testFile, 'utf8');
             
-            // Framework-specific detection
-            if (fileName.includes('jest') || content.includes('jest') || content.includes('describe(') && content.includes('it(')) {
-                return 'jest';
-            } else if (fileName.includes('mocha') || content.includes('mocha')) {
-                return 'mocha';
-            } else if (fileName.includes('pytest') || content.includes('pytest') || content.includes('def test_')) {
-                return 'pytest';
-            } else if (fileName.includes('junit') || content.includes('junit') || content.includes('@Test')) {
-                return 'junit';
-            } else if (fileName.includes('cypress') || content.includes('cypress')) {
-                return 'cypress';
-            } else if (fileName.includes('playwright') || content.includes('playwright')) {
-                return 'playwright';
-            } else if (fileName.includes('vitest') || content.includes('vitest')) {
+            // Check for vitest-specific patterns (highest priority)
+            if (content.includes('vi.') || 
+                content.includes('import { vi }') ||
+                content.includes('from \'vitest\'') ||
+                content.includes('from "vitest"')) {
                 return 'vitest';
             }
             
-            // Default detection based on file extension and content
-            if (ext === '.js' || ext === '.jsx' || ext === '.ts' || ext === '.tsx') {
-                if (content.includes('describe') || content.includes('it') || content.includes('test')) {
-                    return 'jest'; // Default to Jest for JS/TS files
+            // Check for jest-specific patterns
+            if (content.includes('jest.mock') || 
+                content.includes('jest.fn') ||
+                content.includes('from \'@jest/globals\'') ||
+                content.includes('from "@jest/globals"')) {
+                return 'jest';
+            }
+            
+            // Generic patterns (describe/it/expect) - could be either
+            if (content.includes('describe') && content.includes('it') && content.includes('expect')) {
+                // Check project root for hints
+                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                if (workspaceFolder) {
+                    const projectRoot = workspaceFolder.uri.fsPath;
+                    // Try to detect from project (might have been missed)
+                    const frameworkInfo = this.testFrameworkDetector.detect(projectRoot);
+                    if (frameworkInfo.framework !== 'unknown') {
+                        return frameworkInfo.framework;
+                    }
                 }
-            } else if (ext === '.py') {
-                if (content.includes('def test_') || content.includes('pytest')) {
-                    return 'pytest';
-                }
-            } else if (ext === '.java') {
-                if (content.includes('@Test') || content.includes('junit')) {
-                    return 'junit';
-                }
-            } else if (ext === '.cs') {
-                if (content.includes('[Test]') || content.includes('NUnit')) {
-                    return 'nunit';
-                }
+                // Default to vitest for modern projects
+                return 'vitest';
             }
         } catch (error) {
-            console.error('Error reading test file:', error);
+            // Can't read file
         }
         
         return 'unknown';
     }
 
-    private getTestCommand(framework: string, testFile: string): string {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        const relativePath = path.relative(workspaceFolder?.uri.fsPath || '', testFile);
+    private getTestCommand(
+        framework: TestFramework, 
+        testFile: string, 
+        projectRoot: string,
+        packageManager: 'pnpm' | 'yarn' | 'npm'
+    ): string {
+        const relativePath = path.relative(projectRoot, testFile);
         
         switch (framework) {
+            case 'vitest':
+                // Use local binary: <pm> vitest run <file>
+                return this.packageManagerDetector.getCommand(projectRoot, 'vitest', ['run', relativePath]);
+                
             case 'jest':
-                return `npx jest ${relativePath} --verbose`;
+                // Use local binary: <pm> jest <file>
+                return this.packageManagerDetector.getCommand(projectRoot, 'jest', [relativePath, '--verbose']);
                 
             case 'mocha':
-                return `npx mocha ${relativePath}`;
-                
-            case 'vitest':
-                return `npx vitest run ${relativePath}`;
-                
-            case 'pytest':
-                return `python -m pytest ${relativePath} -v`;
-                
-            case 'junit':
-                return `mvn test -Dtest=${path.basename(testFile, '.java')}`;
-                
-            case 'nunit':
-                return `dotnet test --filter ${path.basename(testFile, '.cs')}`;
-                
-            case 'cypress':
-                return `npx cypress run --spec ${relativePath}`;
+                return this.packageManagerDetector.getCommand(projectRoot, 'mocha', [relativePath]);
                 
             case 'playwright':
-                return `npx playwright test ${relativePath}`;
+                return this.packageManagerDetector.getCommand(projectRoot, 'playwright', ['test', relativePath]);
+                
+            case 'cypress':
+                return this.packageManagerDetector.getCommand(projectRoot, 'cypress', ['run', '--spec', relativePath]);
+                
+            case 'ava':
+                return this.packageManagerDetector.getCommand(projectRoot, 'ava', [relativePath]);
+                
+            case 'unknown':
+                // Try to detect framework from test file content as fallback
+                const detectedFromFile = this.detectFrameworkFromFile(testFile);
+                if (detectedFromFile !== 'unknown') {
+                    this.outputChannel.appendLine(`⚠️ Framework unknown from repo, but detected from file: ${detectedFromFile}`);
+                    // Recursively call with detected framework
+                    return this.getTestCommand(detectedFromFile, testFile, projectRoot, packageManager);
+                }
+                
+                // Last resort: Try common test runners with the specific file
+                // Try vitest first (common in modern projects)
+                const vitestBin = path.join(projectRoot, 'node_modules', '.bin', 'vitest');
+                if (fs.existsSync(vitestBin)) {
+                    this.outputChannel.appendLine(`⚠️ Unknown framework, trying vitest (found binary)`);
+                    return `"${vitestBin}" run ${relativePath}`;
+                }
+                
+                // Try jest
+                const jestBin = path.join(projectRoot, 'node_modules', '.bin', 'jest');
+                if (fs.existsSync(jestBin)) {
+                    this.outputChannel.appendLine(`⚠️ Unknown framework, trying jest (found binary)`);
+                    return `"${jestBin}" ${relativePath} --verbose`;
+                }
+                
+                // Final fallback: test script (but warn it might run all tests)
+                this.outputChannel.appendLine(`⚠️ Unknown test framework - falling back to: ${packageManager} test (may run all tests, not just ${path.basename(testFile)})`);
+                switch (packageManager) {
+                    case 'pnpm':
+                        return 'pnpm test';
+                    case 'yarn':
+                        return 'yarn test';
+                    case 'npm':
+                        return 'npm test';
+                }
                 
             default:
                 // Try to run with node for JS files
@@ -210,6 +298,174 @@ export class TestRunner {
         return 'error';
     }
 
+    /**
+     * Strip ANSI color codes from string
+     */
+    private stripAnsiCodes(text: string): string {
+        // Remove ANSI escape sequences (color codes, formatting, etc.)
+        // Pattern: \x1b[ or \u001b[ followed by numbers and letters, ending with m
+        return text.replace(/\u001b\[[0-9;]*m/g, '');
+    }
+
+    /**
+     * Parse test output to extract error details (test case name, error message, stack trace)
+     */
+    private parseTestOutput(output: string, framework: TestFramework, testFile: string): {
+        testCase?: string;
+        errorMessage?: string;
+        stackTrace?: string;
+    } {
+        const result: { testCase?: string; errorMessage?: string; stackTrace?: string } = {};
+        
+        // Strip ANSI codes for easier parsing
+        const cleanOutput = this.stripAnsiCodes(output);
+
+        if (framework === 'vitest' || framework === 'jest') {
+            // Parse vitest/jest output format
+            // Example: "FAIL src/cn-impact.test.ts > cn() > returns a string"
+            // Or: "❯ src/cn-impact.test.ts > cn() > returns a string"
+            const testCasePatterns = [
+                /(?:FAIL|❌)\s+[^\s]+\s+>\s+([^>\n]+(?:\s+>\s+[^>\n]+)*)/,  // FAIL file > suite > test
+                /❯\s+[^\s]+\s+>\s+([^>\n]+(?:\s+>\s+[^>\n]+)*)/,  // ❯ file > suite > test
+                /×\s+([^\n]+)/,  // × test name
+            ];
+            
+            for (const pattern of testCasePatterns) {
+                const match = cleanOutput.match(pattern);
+                if (match) {
+                    result.testCase = match[1].trim();
+                    break;
+                }
+            }
+
+            // Extract error message (TypeError, AssertionError, etc.)
+            // Look for patterns like: "TypeError: message" or "TypeError message"
+            const errorPatterns = [
+                /(TypeError|AssertionError|Error|ReferenceError|SyntaxError)[:\s]+([^\n]+)/,
+                /(TypeError|AssertionError|Error|ReferenceError|SyntaxError)\s*\(([^)]+)\)/,
+            ];
+            
+            for (const pattern of errorPatterns) {
+                const match = cleanOutput.match(pattern);
+                if (match) {
+                    const errorType = match[1];
+                    const errorMsg = match[2]?.trim();
+                    if (errorMsg) {
+                        result.errorMessage = `${errorType}: ${errorMsg}`;
+                        break;
+                    }
+                }
+            }
+
+            // Extract stack trace (file path and line number)
+            // Example: "❯ src/cn-impact.test.ts:6:19"
+            const stackPatterns = [
+                /❯\s+([^\s:]+):(\d+):(\d+)/,  // ❯ file:line:column
+                /at\s+([^\s:]+):(\d+):(\d+)/,  // at file:line:column
+                /([^\s:]+\.(?:ts|tsx|js|jsx)):(\d+):(\d+)/,  // file:line:column (anywhere)
+            ];
+            
+            for (const pattern of stackPatterns) {
+                const match = cleanOutput.match(pattern);
+                if (match) {
+                    const filePath = match[1];
+                    const line = match[2];
+                    const column = match[3];
+                    result.stackTrace = `${filePath}:${line}:${column}`;
+                    break;
+                }
+            }
+
+            // Extract full error details from vitest format
+            // Look for the error block between "⎯⎯⎯" markers or in "Failed Tests" section
+            const errorBlockPatterns = [
+                /⎯⎯⎯[^⎯]*\n([^⎯]+)\n⎯⎯⎯/s,  // Between ⎯⎯⎯ markers
+                /Failed Tests[^\n]*\n([^]*?)(?=\n\n|\nTest Files|$)/s,  // Failed Tests section
+            ];
+            
+            for (const pattern of errorBlockPatterns) {
+                const match = cleanOutput.match(pattern);
+                if (match) {
+                    const errorBlock = match[1];
+                    
+                    // Extract error type and message from block
+                    if (!result.errorMessage) {
+                        const errorTypeMatch = errorBlock.match(/(TypeError|AssertionError|Error|ReferenceError|SyntaxError)[:\s]+([^\n]+)/);
+                        if (errorTypeMatch) {
+                            result.errorMessage = `${errorTypeMatch[1]}: ${errorTypeMatch[2].trim()}`;
+                        }
+                    }
+                    
+                    // Extract file location from error block if not found yet
+                    if (!result.stackTrace) {
+                        const locationMatch = errorBlock.match(/([^\s:]+\.(?:ts|tsx|js|jsx)):(\d+):(\d+)/);
+                        if (locationMatch) {
+                            result.stackTrace = `${locationMatch[1]}:${locationMatch[2]}:${locationMatch[3]}`;
+                        }
+                    }
+                    
+                    // Extract test case from error block if not found yet
+                    if (!result.testCase) {
+                        const testCaseMatch = errorBlock.match(/>\s+([^>\n]+(?:\s+>\s+[^>\n]+)*)/);
+                        if (testCaseMatch) {
+                            result.testCase = testCaseMatch[1].trim();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: Extract any error-like message
+        if (!result.errorMessage) {
+            const genericErrorMatch = cleanOutput.match(/(TypeError|AssertionError|Error|ReferenceError|SyntaxError)[:\s]+([^\n]+)/);
+            if (genericErrorMatch) {
+                result.errorMessage = `${genericErrorMatch[1]}: ${genericErrorMatch[2].trim()}`;
+            }
+        }
+
+        // Enhance error message for common cases - detect root causes
+        if (result.errorMessage) {
+            // Check if error is "is not a function" - this often means export was removed
+            // Pattern: "(0 , __vite_ssr_import_1__.cn) is not a function"
+            // or: "cn is not a function"
+            if (result.errorMessage.includes('is not a function')) {
+                // Try to extract the symbol name from various patterns
+                const symbolPatterns = [
+                    /\(0\s*,\s*[^_]*_import_\d+__\.(\w+)\)\s+is not a function/,  // (0 , __vite_ssr_import_1__.cn) is not a function
+                    /(\w+)\s+is not a function/,  // cn is not a function
+                    /\(0\s*,\s*[^_]*_import_\d+__\[['"](\w+)['"]\]\)\s+is not a function/,  // (0 , __import_1__["cn"]) is not a function
+                ];
+                
+                let symbolName: string | null = null;
+                for (const pattern of symbolPatterns) {
+                    const match = result.errorMessage.match(pattern);
+                    if (match) {
+                        symbolName = match[1];
+                        break;
+                    }
+                }
+                
+                if (symbolName) {
+                    result.errorMessage = `Export '${symbolName}' was removed or is not exported. The import resolves to undefined, causing "is not a function" error.`;
+                } else {
+                    // Keep original but add context
+                    result.errorMessage = `Possible missing export (original: ${result.errorMessage})`;
+                }
+            }
+            
+            // Check for "Cannot read property" - might indicate missing export
+            if (result.errorMessage.includes('Cannot read property') || result.errorMessage.includes('Cannot read properties')) {
+                const propMatch = result.errorMessage.match(/Cannot read (?:properties of undefined \(reading '(\w+)'\)|property '(\w+)')/);
+                if (propMatch) {
+                    const propName = propMatch[1] || propMatch[2];
+                    result.errorMessage = `Export '${propName}' was removed or is not exported. Cannot read property of undefined.`;
+                }
+            }
+        }
+
+        return result;
+    }
+
     private logResults(results: TestResult[]): void {
         const passed = results.filter(r => r.status === 'passed').length;
         const failed = results.filter(r => r.status === 'failed').length;
@@ -228,12 +484,28 @@ export class TestRunner {
         this.outputChannel.appendLine(`Total Time: ${totalTime}ms`);
         this.outputChannel.appendLine('='.repeat(50));
 
-        // Show failed tests
+        // Show failed tests with detailed error information
         const failedTests = results.filter(r => r.status === 'failed' || r.status === 'error');
         if (failedTests.length > 0) {
             this.outputChannel.appendLine('\nFAILED TESTS:');
             failedTests.forEach(test => {
-                this.outputChannel.appendLine(`- ${test.testFile}: ${test.errorMessage || 'Unknown error'}`);
+                this.outputChannel.appendLine(`- ${test.testFile}`);
+                
+                if (test.testCase) {
+                    this.outputChannel.appendLine(`  Test: ${test.testCase}`);
+                }
+                
+                if (test.errorMessage) {
+                    // Strip ANSI codes from error message for cleaner output
+                    const cleanError = this.stripAnsiCodes(test.errorMessage);
+                    this.outputChannel.appendLine(`  Error: ${cleanError}`);
+                } else {
+                    this.outputChannel.appendLine(`  Error: Unknown error`);
+                }
+                
+                if (test.stackTrace) {
+                    this.outputChannel.appendLine(`  Location: ${test.stackTrace}`);
+                }
             });
         }
     }
