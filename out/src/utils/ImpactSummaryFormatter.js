@@ -15,13 +15,23 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ImpactSummaryFormatter = void 0;
 const path = __importStar(require("path"));
@@ -65,6 +75,64 @@ class ImpactSummaryFormatter {
         lines.push(`│ Confidence: ${this.padRight(confidence + '% (' + confidenceLevel + ')', 38)} │`);
         // Changes section
         lines.push('├─ CHANGES ──────────────────────────────────────┤');
+        // Check for specific breaking changes from snapshotDiff.changedSymbols
+        const breakingChanges = result.snapshotDiff?.changedSymbols?.filter((s) => s.isBreaking) || [];
+        // Debug logging
+        const debugLog = require('../core/debug-logger').debugLog;
+        debugLog(`[ImpactSummaryFormatter] formatDetailedSummary: snapshotDiff exists: ${!!result.snapshotDiff}`);
+        debugLog(`[ImpactSummaryFormatter] formatDetailedSummary: changedSymbols count: ${result.snapshotDiff?.changedSymbols?.length || 0}`);
+        debugLog(`[ImpactSummaryFormatter] formatDetailedSummary: breaking changes count: ${breakingChanges.length}`);
+        breakingChanges.forEach((change, idx) => {
+            debugLog(`[ImpactSummaryFormatter] Breaking change ${idx}: symbol=${change.symbol?.name || 'unknown'}, message=${change.metadata?.message || 'no message'}, changeType=${change.changeType || 'unknown'}`);
+        });
+        if (breakingChanges.length > 0) {
+            lines.push(`│ 🚨 Breaking Changes (${breakingChanges.length}):${this.padRight('', 25 - breakingChanges.length.toString().length)} │`);
+            breakingChanges.slice(0, 5).forEach((change) => {
+                const symbolName = change.symbol?.name || change.symbol?.qualifiedName || 'unknown';
+                const specificMessage = change.metadata?.message ||
+                    (change.changeType === 'signature-changed' ? 'Signature changed' :
+                        change.changeType === 'type-changed' ? 'Type changed' :
+                            change.changeType === 'removed' ? 'Removed' :
+                                'Breaking change detected');
+                // Format: "symbolName: specific message"
+                const changeText = `${symbolName}: ${specificMessage}`;
+                const shortText = changeText.length > 38 ? changeText.substring(0, 35) + '...' : changeText;
+                lines.push(`│   • ${this.padRight(shortText, 40)} │`);
+            });
+            if (breakingChanges.length > 5) {
+                lines.push(`│   ... and ${breakingChanges.length - 5} more${this.padRight('', 27)} │`);
+            }
+        }
+        // Check for export removals/modifications (from snapshotDiff)
+        const removedExports = result.snapshotDiff?.exportChanges?.removed || [];
+        const modifiedExports = result.snapshotDiff?.exportChanges?.modified || [];
+        if (removedExports.length > 0) {
+            lines.push(`│ 🚨 Removed Exports (${removedExports.length}):${this.padRight('', 29 - removedExports.length.toString().length)} │`);
+            removedExports.slice(0, 3).forEach((exp) => {
+                const exportName = typeof exp === 'object' && exp !== null && 'name' in exp ? exp.name : String(exp);
+                const shortExp = exportName.length > 35 ? exportName.substring(0, 32) + '...' : exportName;
+                lines.push(`│   • ${this.padRight(shortExp, 40)} │`);
+            });
+            if (removedExports.length > 3) {
+                lines.push(`│   ... and ${removedExports.length - 3} more${this.padRight('', 27)} │`);
+            }
+        }
+        if (modifiedExports.length > 0) {
+            lines.push(`│ ⚠️  Modified Exports (${modifiedExports.length}):${this.padRight('', 27 - modifiedExports.length.toString().length)} │`);
+            modifiedExports.slice(0, 3).forEach((exp) => {
+                const exportName = typeof exp === 'object' && exp !== null && 'name' in exp
+                    ? exp.name
+                    : typeof exp === 'object' && exp !== null && 'after' in exp && exp.after
+                        ? exp.after.name
+                        : String(exp);
+                const shortExp = exportName.length > 35 ? exportName.substring(0, 32) + '...' : exportName;
+                lines.push(`│   • ${this.padRight(shortExp, 40)} │`);
+            });
+            if (modifiedExports.length > 3) {
+                lines.push(`│   ... and ${modifiedExports.length - 3} more${this.padRight('', 27)} │`);
+            }
+        }
+        // Show other changes (non-breaking or not yet detected as breaking)
         if (result.changedFunctions.length > 0) {
             lines.push(`│ 📝 Functions (${result.changedFunctions.length}):${this.padRight('', 33 - result.changedFunctions.length.toString().length)} │`);
             result.changedFunctions.slice(0, 3).forEach(fn => {
@@ -85,7 +153,12 @@ class ImpactSummaryFormatter {
                 lines.push(`│   ... and ${result.changedClasses.length - 3} more${this.padRight('', 27)} │`);
             }
         }
-        if (result.changedFunctions.length === 0 && result.changedClasses.length === 0) {
+        const hasAnyChanges = result.changedFunctions.length > 0 ||
+            result.changedClasses.length > 0 ||
+            breakingChanges.length > 0 ||
+            removedExports.length > 0 ||
+            modifiedExports.length > 0;
+        if (!hasAnyChanges) {
             lines.push('│ (No specific changes identified)                │');
         }
         // Affected tests section
@@ -229,11 +302,23 @@ class ImpactSummaryFormatter {
         if (!result.hasActualChanges) {
             return 'No changes detected. Safe to commit.';
         }
-        if (result.riskLevel === 'low' && result.affectedTests.length === 0) {
-            return 'Low-risk change with no affected tests. Ready to commit.';
+        // Check for breaking changes (export removals/modifications)
+        const removedExports = result.snapshotDiff?.exportChanges?.removed || [];
+        const modifiedExports = result.snapshotDiff?.exportChanges?.modified || [];
+        const hasBreakingExports = removedExports.length > 0 || modifiedExports.length > 0;
+        if (hasBreakingExports) {
+            if (removedExports.length > 0) {
+                return `🚨 BREAKING CHANGE: ${removedExports.length} export(s) removed. This will break code that imports these exports. Review all imports and update dependent code before committing.`;
+            }
+            else if (modifiedExports.length > 0) {
+                return `⚠️ BREAKING CHANGE: ${modifiedExports.length} export(s) modified. Review changes to ensure backward compatibility before committing.`;
+            }
         }
         if (result.riskLevel === 'high' || result.affectedTests.length > 5) {
             return 'High-risk change. Run affected tests before committing to ensure no regressions.';
+        }
+        if (result.riskLevel === 'low' && result.affectedTests.length === 0) {
+            return 'Low-risk change with no affected tests. Ready to commit.';
         }
         if (result.downstreamComponents.length > 3) {
             return 'Multiple downstream dependencies detected. Review affected components before committing.';

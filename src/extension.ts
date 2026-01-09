@@ -146,6 +146,35 @@ export function activate(context: vscode.ExtensionContext) {
     console.log('Real-Time Impact Analyzer extension is now active!');
 
     try {
+        // Step C: Runtime guard to prevent TypeScript version mismatches
+        // This prevents regressions where ts and ts-morph use different TypeScript versions
+        try {
+            const ts = require('typescript');
+            const tsMorph = require('ts-morph');
+            const tsVersion = ts.version;
+            const tsMorphTsVersion = tsMorph.ts.version;
+            
+            if (tsVersion !== tsMorphTsVersion) {
+                const errorMsg = `TypeScript version mismatch detected: typescript=${tsVersion} ts-morph.ts=${tsMorphTsVersion}. This will cause AST parsing issues. Please ensure package.json has matching versions.`;
+                console.error(errorMsg);
+                vscode.window.showErrorMessage(
+                    `Impact Analyzer: TypeScript version mismatch (${tsVersion} vs ${tsMorphTsVersion}). Analysis may be unreliable. Check extension logs.`,
+                    'Show Logs'
+                ).then(selection => {
+                    if (selection === 'Show Logs') {
+                        vscode.commands.executeCommand('workbench.action.output.toggleOutput');
+                    }
+                });
+                // In production, we could disable analysis here, but for now we just warn
+                // throw new Error(errorMsg); // Uncomment to hard-fail in dev builds
+            } else {
+                console.log(`✅ TypeScript versions aligned: ${tsVersion} (typescript) === ${tsMorphTsVersion} (ts-morph.ts)`);
+            }
+        } catch (versionCheckError) {
+            console.warn('Failed to check TypeScript version alignment:', versionCheckError);
+            // Continue anyway - version check failure shouldn't block activation
+        }
+
         // Initialize core services
         const configManager = new ConfigurationManager();
         // Baseline cache is session-only (in-memory) - starts fresh on each extension reload

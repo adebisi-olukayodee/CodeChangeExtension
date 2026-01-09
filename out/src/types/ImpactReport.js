@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createEmptyReport = exports.reportsEqual = exports.serializeReport = void 0;
+exports.serializeReport = serializeReport;
+exports.reportsEqual = reportsEqual;
+exports.createEmptyReport = createEmptyReport;
 /**
  * Serialize an ImpactReport to JSON string.
  * Useful for snapshot testing and debugging.
@@ -8,7 +10,6 @@ exports.createEmptyReport = exports.reportsEqual = exports.serializeReport = voi
 function serializeReport(report) {
     return JSON.stringify(report, null, 2);
 }
-exports.serializeReport = serializeReport;
 /**
  * Compare two ImpactReports for equality.
  * Useful for testing.
@@ -16,7 +17,6 @@ exports.serializeReport = serializeReport;
 function reportsEqual(a, b) {
     return JSON.stringify(a) === JSON.stringify(b);
 }
-exports.reportsEqual = reportsEqual;
 /**
  * Create an empty ImpactReport for a given file.
  */
@@ -29,5 +29,4 @@ function createEmptyReport(sourceFile) {
         issues: []
     };
 }
-exports.createEmptyReport = createEmptyReport;
 //# sourceMappingURL=ImpactReport.js.map

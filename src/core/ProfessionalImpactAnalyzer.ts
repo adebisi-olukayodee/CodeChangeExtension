@@ -58,6 +58,11 @@ export interface ImpactAnalysisResult {
         new: 'success' | 'failed' | 'not_attempted';
         fallback?: 'text_diff' | 'none';
     }; // AST parse status - don't silently fail
+    snapshotDiff?: any; // Snapshot diff containing exportChanges for breaking change detection
+    /** Map of downstream file paths to import line numbers (for cursor navigation) - stored as plain object for serialization */
+    downstreamFilesLineNumbers?: Record<string, number>;
+    /** Absolute path to the workspace root where the dependency analysis was performed */
+    analysisRootAbs?: string;
 }
 
 /**
@@ -96,9 +101,10 @@ export class ProfessionalImpactAnalyzer {
         // Create debug output channel
         this.debugOutputChannel = vscode.window.createOutputChannel('Impact Analyzer Debug');
         
-        // Clear debug log file on extension activation and show location
+        // Register output channel with debug logger so TypeScriptAnalyzer can use it
         try {
-            const { clearDebugLog, getDebugLogPath } = require('./debug-logger');
+            const { setDebugOutputChannel, clearDebugLog, getDebugLogPath } = require('./debug-logger');
+            setDebugOutputChannel(this.debugOutputChannel);
             clearDebugLog();
             const logPath = getDebugLogPath();
             console.log(`[Debug Logger] Log file location: ${logPath}`);
@@ -600,27 +606,47 @@ export class ProfessionalImpactAnalyzer {
                         if (areEqual) {
                             // Disk matches current - no changes detected
                             this.debugLog(`✅ Baseline (disk) === Current - no changes detected`);
-                            const emptyResult: ImpactAnalysisResult = {
-                                filePath,
-                                changedFunctions: [],
-                                changedClasses: [],
-                                changedModules: [],
-                                affectedTests: [],
-                                downstreamComponents: [],
-                                confidence: 1.0,
-                                estimatedTestTime: 0,
-                                coverageImpact: 0,
-                                riskLevel: 'low',
-                                timestamp: new Date(),
-                                hasActualChanges: false,
-                                baselineType: 'snapshot:lastSave',
-                                baseline,
-                                currentVersion,
-                                parseStatus: {
-                                    old: 'not_attempted',
-                                    new: 'not_attempted'
-                                }
-                            };
+                // Determine project root for empty result
+                let projectRootForEmpty: string | undefined;
+                try {
+                    const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                    if (repoRoot) {
+                        projectRootForEmpty = path.resolve(repoRoot);
+                    }
+                } catch {
+                    // Ignore
+                }
+                if (!projectRootForEmpty) {
+                    const workspaceFolders = vscode.workspace.workspaceFolders;
+                    if (workspaceFolders && workspaceFolders.length > 0) {
+                        projectRootForEmpty = workspaceFolders[0].uri.fsPath;
+                    } else {
+                        projectRootForEmpty = path.dirname(filePath);
+                    }
+                }
+                
+                const emptyResult: ImpactAnalysisResult = {
+                    filePath,
+                    changedFunctions: [],
+                    changedClasses: [],
+                    changedModules: [],
+                    affectedTests: [],
+                    downstreamComponents: [],
+                    confidence: 1.0,
+                    estimatedTestTime: 0,
+                    coverageImpact: 0,
+                    riskLevel: 'low',
+                    timestamp: new Date(),
+                    hasActualChanges: false,
+                    baselineType: 'snapshot:lastSave',
+                    analysisRootAbs: projectRootForEmpty ? path.resolve(projectRootForEmpty) : undefined,
+                    baseline,
+                    currentVersion,
+                    parseStatus: {
+                        old: 'not_attempted',
+                        new: 'not_attempted'
+                    }
+                };
                             vscode.window.showInformationMessage(`✅ First analysis - baseline initialized, no changes detected`, { modal: false });
                             return emptyResult;
                         } else {
@@ -638,6 +664,25 @@ export class ProfessionalImpactAnalyzer {
                             availability: 'unavailable',
                             reason: `disk_read_error: ${diskError}`
                         };
+                        // Determine project root for empty result
+                        let projectRootForEmpty2: string | undefined;
+                        try {
+                            const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                            if (repoRoot) {
+                                projectRootForEmpty2 = path.resolve(repoRoot);
+                            }
+                        } catch {
+                            // Ignore
+                        }
+                        if (!projectRootForEmpty2) {
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                projectRootForEmpty2 = workspaceFolders[0].uri.fsPath;
+                            } else {
+                                projectRootForEmpty2 = path.dirname(filePath);
+                            }
+                        }
+                        
                         const emptyResult: ImpactAnalysisResult = {
                             filePath,
                             changedFunctions: [],
@@ -652,6 +697,7 @@ export class ProfessionalImpactAnalyzer {
                             timestamp: new Date(),
                             hasActualChanges: false,
                             baselineType: 'none',
+                            analysisRootAbs: projectRootForEmpty2 ? path.resolve(projectRootForEmpty2) : undefined,
                             baseline,
                             currentVersion,
                             parseStatus: {
@@ -708,6 +754,25 @@ export class ProfessionalImpactAnalyzer {
                     this.debugOutputChannel.show(true);
                 }
                 // Return empty result immediately
+                // Determine project root for empty result
+                let projectRootForEmpty3: string | undefined;
+                try {
+                    const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                    if (repoRoot) {
+                        projectRootForEmpty3 = path.resolve(repoRoot);
+                    }
+                } catch {
+                    // Ignore
+                }
+                if (!projectRootForEmpty3) {
+                    const workspaceFolders = vscode.workspace.workspaceFolders;
+                    if (workspaceFolders && workspaceFolders.length > 0) {
+                        projectRootForEmpty3 = workspaceFolders[0].uri.fsPath;
+                    } else {
+                        projectRootForEmpty3 = path.dirname(filePath);
+                    }
+                }
+                
                 const emptyResult: ImpactAnalysisResult = {
                     filePath,
                     changedFunctions: [],
@@ -722,6 +787,7 @@ export class ProfessionalImpactAnalyzer {
                     timestamp: new Date(),
                     hasActualChanges: false,
                     baselineType,
+                    analysisRootAbs: projectRootForEmpty3 ? path.resolve(projectRootForEmpty3) : undefined,
                     baseline: {
                         ...baseline,
                         refName: baselineRef,
@@ -765,13 +831,68 @@ export class ProfessionalImpactAnalyzer {
             }
             
             // Use AST-based diff for semantic change detection (works with any baseline source)
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            if (!workspaceFolder) {
-                throw new Error('No workspace folder found');
+            // Determine project root from the file path itself (handles multi-workspace scenarios)
+            let projectRoot: string;
+            
+            // Strategy 1: Find Git repo root that contains the file (most accurate)
+            try {
+                // getRepoRoot uses gitAnalyzer.getRepoRoot which can work from any directory
+                const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                if (repoRoot) {
+                    // Normalize paths for comparison (handle different separators)
+                    const normalizedRepoRoot = path.resolve(repoRoot).replace(/\\/g, '/');
+                    const normalizedFilePath = path.resolve(filePath).replace(/\\/g, '/');
+                    if (normalizedFilePath.startsWith(normalizedRepoRoot + '/') || normalizedFilePath === normalizedRepoRoot) {
+                        projectRoot = repoRoot;
+                        this.debugLog(`✅ Found project root from Git: ${projectRoot}`);
+                    } else {
+                        throw new Error(`Git repo root (${repoRoot}) does not contain file (${filePath})`);
+                    }
+                } else {
+                    throw new Error('Git repo root not found');
+                }
+            } catch (error) {
+                this.debugLog(`Git repo root lookup failed: ${error}`);
+                // Strategy 2: Find workspace folder that contains the file
+                const workspaceFolders = vscode.workspace.workspaceFolders || [];
+                const containingWorkspace = workspaceFolders.find(wf => {
+                    const workspacePath = wf.uri.fsPath;
+                    const normalizedWorkspace = workspacePath.replace(/\\/g, '/');
+                    const normalizedFile = filePath.replace(/\\/g, '/');
+                    return normalizedFile.startsWith(normalizedWorkspace + '/') || normalizedFile === normalizedWorkspace;
+                });
+                
+                if (containingWorkspace) {
+                    projectRoot = containingWorkspace.uri.fsPath;
+                    this.debugLog(`✅ Found project root from workspace folder: ${projectRoot}`);
+                } else if (workspaceFolders.length > 0) {
+                    // Strategy 3: Fallback to first workspace folder (old behavior)
+                    projectRoot = workspaceFolders[0].uri.fsPath;
+                    this.debugLog(`⚠️ Using first workspace folder as project root (fallback): ${projectRoot}`);
+                    this.debugLog(`⚠️ File path: ${filePath} may not be in this workspace`);
+                } else {
+                    // Strategy 4: Use file's directory (last resort)
+                    projectRoot = path.dirname(filePath);
+                    this.debugLog(`⚠️ Using file directory as project root (last resort): ${projectRoot}`);
+                }
             }
             
-            const projectRoot = workspaceFolder.uri.fsPath;
-            const relativeFilePath = path.relative(projectRoot, filePath);
+            let relativeFilePath = path.relative(projectRoot, filePath);
+            
+            // Validate that the relative path doesn't go up directories (file should be in project root)
+            if (relativeFilePath.startsWith('..') || path.isAbsolute(relativeFilePath)) {
+                this.debugLog(`⚠️ WARNING: Relative path calculation failed!`);
+                this.debugLog(`⚠️ Project root: ${projectRoot}`);
+                this.debugLog(`⚠️ File path: ${filePath}`);
+                this.debugLog(`⚠️ Relative path: ${relativeFilePath}`);
+                this.debugLog(`⚠️ File appears to be outside project root. Using file path directly.`);
+                // Fallback: use file path as-is (assume it's already relative or absolute)
+                relativeFilePath = path.basename(filePath);
+            }
+            
+            this.debugLog(`Project root: ${projectRoot}`);
+            this.debugLog(`File path: ${filePath}`);
+            this.debugLog(`Relative file path: ${relativeFilePath}`);
             
             this.debugLog(`Calling analyzeImpact() with AST diff`);
             this.debugLog(`AST diff will analyze: baseline (${baselineType}) vs current content`);
@@ -874,6 +995,7 @@ export class ProfessionalImpactAnalyzer {
                 gitChanges,
                 hasActualChanges: true,
                 baselineType,
+                analysisRootAbs: path.resolve(projectRoot), // Store absolute project root for path resolution
                 baseline: {
                     ...baseline,
                     refName: baselineRef,
@@ -881,8 +1003,20 @@ export class ProfessionalImpactAnalyzer {
                     reason: fallbackReason || baseline?.reason
                 },
                 currentVersion,
-                parseStatus
+                parseStatus,
+                snapshotDiff, // Attach snapshotDiff for breaking change detection
+                downstreamFilesLineNumbers: (report as any).downstreamFilesLineNumbers // Pass through line numbers for UI navigation
             };
+            
+            // Debug logging for snapshotDiff attachment
+            if (snapshotDiff) {
+                this.debugLog(`✅ snapshotDiff attached to result`);
+                this.debugLog(`   exportChanges.removed: ${snapshotDiff.exportChanges?.removed?.length || 0}`);
+                this.debugLog(`   exportChanges.modified: ${snapshotDiff.exportChanges?.modified?.length || 0}`);
+                console.log(`[ProfessionalImpactAnalyzer] ✅ snapshotDiff attached to result`);
+                console.log(`[ProfessionalImpactAnalyzer]    exportChanges.removed: ${snapshotDiff.exportChanges?.removed?.length || 0}`);
+                console.log(`[ProfessionalImpactAnalyzer]    exportChanges.modified: ${snapshotDiff.exportChanges?.modified?.length || 0}`);
+            }
             
             // Show output channel
             if (this.debugOutputChannel) {
@@ -1013,10 +1147,21 @@ export class ProfessionalImpactAnalyzer {
 
     private calculateRiskLevelFromReport(report: ImpactReport, snapshotDiff?: any): 'low' | 'medium' | 'high' {
         // If there are breaking changes, always mark as high risk
+        // Check for symbol-level breaking changes
         if (snapshotDiff?.changedSymbols) {
             const breakingChanges = snapshotDiff.changedSymbols.filter((s: any) => s.isBreaking);
             if (breakingChanges.length > 0) {
-                this.debugLog(`⚠️ Breaking changes detected: ${breakingChanges.length} - setting risk level to HIGH`);
+                this.debugLog(`⚠️ Breaking changes detected: ${breakingChanges.length} symbol changes - setting risk level to HIGH`);
+                return 'high';
+            }
+        }
+        
+        // Check for export removals/modifications (these are always breaking changes)
+        if (snapshotDiff?.exportChanges) {
+            const removedExports = snapshotDiff.exportChanges.removed?.length || 0;
+            const modifiedExports = snapshotDiff.exportChanges.modified?.length || 0;
+            if (removedExports > 0 || modifiedExports > 0) {
+                this.debugLog(`⚠️ Breaking changes detected: ${removedExports} export removals, ${modifiedExports} export modifications - setting risk level to HIGH`);
                 return 'high';
             }
         }

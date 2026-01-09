@@ -374,8 +374,9 @@ export class JavaScriptAnalyzer implements ILanguageAnalyzer {
             
             // Handle export default on declarations: export default function/class/var
             // This prevents treating "export default function main() {}" as both default and named
-            const hasDefault = node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword);
-            const hasExport = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
+            const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+            const hasDefault = modifiers?.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.DefaultKeyword);
+            const hasExport = modifiers?.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.ExportKeyword);
             
             if (hasDefault && hasExport) {
                 // Default export: export default ...
@@ -629,8 +630,9 @@ export class JavaScriptAnalyzer implements ILanguageAnalyzer {
         const visit = (node: ts.Node) => {
             if (ts.isFunctionDeclaration(node)) {
                 // Check if it's a default export - if so, skip (default exports are handled in extractExports)
-                const isDefaultExport = node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
-                const isExported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) || false;
+                const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+                const isDefaultExport = modifiers?.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
+                const isExported = modifiers?.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.ExportKeyword) || false;
                 // Only process named exports, not default exports
                 if (isExported && !isDefaultExport) {
                     const name = node.name?.text || 'anonymous';
@@ -674,8 +676,9 @@ export class JavaScriptAnalyzer implements ILanguageAnalyzer {
         const visit = (node: ts.Node) => {
             if (ts.isClassDeclaration(node)) {
                 // Check if it's a default export - if so, skip (default exports are handled in extractExports)
-                const isDefaultExport = node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
-                const isExported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) || false;
+                const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+                const isDefaultExport = modifiers?.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
+                const isExported = modifiers?.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.ExportKeyword) || false;
                 // Only process named exports, not default exports
                 if (isExported && !isDefaultExport) {
                     const name = node.name?.text || 'anonymous';
@@ -718,7 +721,8 @@ export class JavaScriptAnalyzer implements ILanguageAnalyzer {
 
     private isPrivate(member: ts.MethodDeclaration): boolean {
         // Check for private modifier or # prefix (private fields)
-        return member.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword) || false;
+        const modifiers = ts.canHaveModifiers(member) ? ts.getModifiers(member) : undefined;
+        return modifiers?.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.PrivateKeyword) || false;
     }
 
     private getFunctionSignature(node: ts.FunctionDeclaration): string {

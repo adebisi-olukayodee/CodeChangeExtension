@@ -98,8 +98,23 @@ export async function analyzeImpactWithDiff(
     // Set project root for analyzers that need it
     LanguageAnalyzerFactory.setProjectRoot(projectRoot);
 
-    const fullFilePath = path.join(projectRoot, file);
+    // Construct full file path - handle both relative and absolute paths
+    let fullFilePath: string;
+    if (path.isAbsolute(file)) {
+        // If file is already absolute, use it directly (might happen if relative path calculation was wrong)
+        fullFilePath = file;
+        log(`⚠️ File path is already absolute: ${fullFilePath}`);
+        log(`⚠️ Expected relative path from project root: ${projectRoot}`);
+    } else {
+        fullFilePath = path.join(projectRoot, file);
+    }
+    
+    // Normalize the path to ensure consistency
+    fullFilePath = path.resolve(fullFilePath);
     const fileExt = path.extname(fullFilePath).toLowerCase();
+    log(`File: ${file}`);
+    log(`Project root: ${projectRoot}`);
+    log(`Full file path: ${fullFilePath}`);
     log(`File extension: ${fileExt}`);
     
     const languageAnalyzer = LanguageAnalyzerFactory.getAnalyzer(fullFilePath);
@@ -136,7 +151,8 @@ export async function analyzeImpactWithDiff(
             // Diff snapshots
             log(`Diffing snapshots...`);
             snapshotDiff = await languageAnalyzer.diffSnapshots(beforeSnapshot, afterSnapshot);
-            log(`Snapshot diff: ${snapshotDiff.changedSymbols.length} changed symbols, ${snapshotDiff.added.length} added, ${snapshotDiff.removed.length} removed, ${snapshotDiff.modified.length} modified`);
+            log(`Snapshot diff: ${snapshotDiff.changedSymbols.length} changed symbols, ${snapshotDiff.added.length} added symbols, ${snapshotDiff.removed.length} removed symbols, ${snapshotDiff.modified.length} modified symbols`);
+            log(`Export changes: ${snapshotDiff.exportChanges.added.length} added, ${snapshotDiff.exportChanges.removed.length} removed, ${snapshotDiff.exportChanges.modified.length} modified`);
             
             // Extract changed functions and classes from changed symbols
             changedFunctions = snapshotDiff.changedSymbols
@@ -151,9 +167,12 @@ export async function analyzeImpactWithDiff(
                 .filter(s => s.symbol.kind === 'type' || s.symbol.kind === 'interface')
                 .map(s => s.symbol.name);
             
-            // Also include breaking changes (export removals, type changes)
-            const breakingChanges = snapshotDiff.changedSymbols.filter(s => s.isBreaking);
-            log(`Breaking changes: ${breakingChanges.length}`);
+            // Count breaking changes (includes both symbol-level breaking changes and export removals)
+            const breakingSymbolChanges = snapshotDiff.changedSymbols.filter(s => s.isBreaking);
+            const breakingExportRemovals = snapshotDiff.exportChanges.removed.length;
+            const breakingExportModifications = snapshotDiff.exportChanges.modified.length;
+            const totalBreakingChanges = breakingSymbolChanges.length + breakingExportRemovals + breakingExportModifications;
+            log(`Breaking changes: ${totalBreakingChanges} (${breakingSymbolChanges.length} symbol changes, ${breakingExportRemovals} export removals, ${breakingExportModifications} export modifications)`);
             
             log(`Changed functions: ${JSON.stringify(changedFunctions)}`);
             log(`Changed classes: ${JSON.stringify(changedClasses)}`);
@@ -310,6 +329,10 @@ export async function analyzeImpactWithDiff(
     log(`Finding downstream files for: ${afterFilePath}`);
     log(`Project root: ${projectRoot}`);
     log(`Impacted export names: ${Array.from(impactedExportNames)}`);
+    log(`Impacted export names count: ${impactedExportNames.size}`);
+    if (impactedExportNames.size === 0) {
+        log(`⚠️ No impacted export names found - will find all files that import this module`);
+    }
     
     // CRITICAL: These logs MUST appear before dependency analyzer is called
     console.error(`[PureImpactAnalyzer] ========== CALLING DEPENDENCY ANALYZER ==========`);
@@ -323,51 +346,85 @@ export async function analyzeImpactWithDiff(
     console.log(`[PureImpactAnalyzer] projectRoot: ${projectRoot}`);
     console.log(`[PureImpactAnalyzer] impactedExportNames.size: ${impactedExportNames.size}`);
     
-    let downstreamFiles: string[] = [];
+    // Get downstream files with line numbers
+    let downstreamFilesWithLines: Array<{ file: string; lineNumber: number }> = [];
     if (impactedExportNames.size > 0) {
-        console.error(`[PureImpactAnalyzer] Calling findDownstreamComponents with impactedExportNames`);
-        downstreamFiles = await dependencyAnalyzer.findDownstreamComponents(
+        console.error(`[PureImpactAnalyzer] Calling findDownstreamComponentsWithLines with impactedExportNames`);
+        downstreamFilesWithLines = await dependencyAnalyzer.findDownstreamComponentsWithLines(
             afterFilePath,
             changedCodeAnalysis,
             Array.from(impactedExportNames),
             projectRoot
         );
-        console.error(`[PureImpactAnalyzer] findDownstreamComponents returned ${downstreamFiles.length} files`);
+        console.error(`[PureImpactAnalyzer] findDownstreamComponentsWithLines returned ${downstreamFilesWithLines.length} files`);
     } else {
-        console.error(`[PureImpactAnalyzer] Calling findDownstreamComponents WITHOUT impactedExportNames`);
-        downstreamFiles = await dependencyAnalyzer.findDownstreamComponents(
+        console.error(`[PureImpactAnalyzer] Calling findDownstreamComponentsWithLines WITHOUT impactedExportNames`);
+        downstreamFilesWithLines = await dependencyAnalyzer.findDownstreamComponentsWithLines(
             afterFilePath,
             changedCodeAnalysis,
             undefined,
             projectRoot
         );
-        console.error(`[PureImpactAnalyzer] findDownstreamComponents returned ${downstreamFiles.length} files`);
+        console.error(`[PureImpactAnalyzer] findDownstreamComponentsWithLines returned ${downstreamFilesWithLines.length} files`);
     }
     
+    const downstreamFiles = downstreamFilesWithLines.map(item => item.file);
     log(`Found ${downstreamFiles.length} downstream files`);
     
     // Filter out test files from downstream files (test files should only be in affectedTests)
     const isTestFile = (filePath: string): boolean => {
         const normalized = filePath.replace(/\\/g, '/');
-        return (
+        const isTest = (
             normalized.includes('/test/') ||
             normalized.includes('/tests/') ||
             normalized.includes('/__tests__/') ||
             /\.test\.(ts|tsx|js|jsx)$/i.test(normalized) ||
             /\.spec\.(ts|tsx|js|jsx)$/i.test(normalized)
         );
+        if (isTest) {
+            log(`[PureImpactAnalyzer] File classified as test: ${normalized}`);
+        }
+        return isTest;
     };
     
-    // Separate downstream files from test files
-    const sourceDownstreamFiles = downstreamFiles.filter(f => !isTestFile(f));
-    const testFilesFromDependencyAnalyzer = downstreamFiles.filter(f => isTestFile(f));
+    // Separate downstream files from test files (with line numbers)
+    const sourceDownstreamFilesWithLines = downstreamFilesWithLines.filter(item => !isTestFile(item.file));
+    const testFilesFromDependencyAnalyzer = downstreamFilesWithLines.filter(item => isTestFile(item.file));
     
-    log(`Filtered ${downstreamFiles.length} files: ${sourceDownstreamFiles.length} source files, ${testFilesFromDependencyAnalyzer.length} test files`);
+    log(`Filtered ${downstreamFiles.length} files: ${sourceDownstreamFilesWithLines.length} source files, ${testFilesFromDependencyAnalyzer.length} test files`);
     
-    // Convert to relative paths
-    const relativeDownstreamFiles = sourceDownstreamFiles.map(f => 
-        path.relative(projectRoot, f)
-    );
+    // Debug: Log which files were classified as what
+    if (downstreamFilesWithLines.length > 0) {
+        log(`[PureImpactAnalyzer] Downstream files found:`);
+        downstreamFilesWithLines.forEach(item => {
+            const normalized = item.file.replace(/\\/g, '/');
+            const isTest = isTestFile(item.file);
+            log(`  - ${normalized} (line ${item.lineNumber}) - ${isTest ? 'TEST' : 'SOURCE'}`);
+        });
+    }
+    
+    // Convert to relative paths and store line numbers
+    const relativeDownstreamFiles = sourceDownstreamFilesWithLines.map(item => ({
+        file: path.relative(projectRoot, item.file),
+        lineNumber: item.lineNumber
+    }));
+    
+    // Store downstream files with line numbers for later use
+    // Use plain object instead of Map for better serialization compatibility
+    // Only store valid line numbers (>= 0); -1 means "unknown line" and should not be stored
+    const downstreamFilesMap: Record<string, number> = {};
+    for (const item of relativeDownstreamFiles) {
+        // Only store if we have a valid line number (>= 0)
+        // -1 is a sentinel for "unknown line" - don't store it, UI will handle it
+        if (item.lineNumber >= 0) {
+            downstreamFilesMap[item.file] = item.lineNumber;
+            log(`[PureImpactAnalyzer] ✅ Stored line number for ${item.file}: ${item.lineNumber}`);
+        } else {
+            log(`[PureImpactAnalyzer] ⚠️ Line number is -1 (unknown) for ${item.file} - file will be shown but without line navigation`);
+        }
+    }
+    const validLineCount = Object.keys(downstreamFilesMap).length;
+    log(`[PureImpactAnalyzer] Stored ${validLineCount}/${relativeDownstreamFiles.length} downstream files with valid line numbers`);
 
     // Find affected tests - ONLY high-confidence tests with proven dependencies
     // High-confidence criteria:
@@ -377,7 +434,7 @@ export async function analyzeImpactWithDiff(
     let affectedTests: string[] = [];
     
     // Strategy 1: Tests found by DependencyAnalyzer (highest confidence - proven dependency)
-    const highConfidenceTests = new Set<string>(testFilesFromDependencyAnalyzer);
+    const highConfidenceTests = new Set<string>(testFilesFromDependencyAnalyzer.map(item => item.file));
     
     // Strategy 2: Find tests that directly import the changed file
     try {
@@ -406,7 +463,7 @@ export async function analyzeImpactWithDiff(
     } catch (error) {
         // Fallback: scan for test files manually, but only include those with proven imports
         console.log('TestFinder failed (likely in test environment), using fallback');
-        const fallbackTests = await findTestFilesFallback(fullFilePath, projectRoot, sourceDownstreamFiles);
+        const fallbackTests = await findTestFilesFallback(fullFilePath, projectRoot, sourceDownstreamFilesWithLines.map(item => item.file));
         // The fallback already filters by imports, so include those
         for (const testFile of fallbackTests) {
             highConfidenceTests.add(testFile);
@@ -418,7 +475,7 @@ export async function analyzeImpactWithDiff(
     affectedTests = Array.from(highConfidenceTests);
     
     // Log summary
-    const hasProvenDependencies = sourceDownstreamFiles.length > 0 || testFilesFromDependencyAnalyzer.length > 0 || affectedTests.length > 0;
+    const hasProvenDependencies = sourceDownstreamFilesWithLines.length > 0 || testFilesFromDependencyAnalyzer.length > 0 || affectedTests.length > 0;
     if (!hasProvenDependencies) {
         log(`⚠️ No proven test dependencies found. Not including any tests in affected tests list (to avoid false positives).`);
     } else {
@@ -432,9 +489,9 @@ export async function analyzeImpactWithDiff(
 
     // Build issues list
     const issues = [
-        ...relativeDownstreamFiles.map(target => ({
+        ...relativeDownstreamFiles.map(item => ({
             type: "downstream" as const,
-            target
+            target: item.file
         })),
         ...relativeTests.map(target => ({
             type: "test" as const,
@@ -449,11 +506,14 @@ export async function analyzeImpactWithDiff(
     const report: ImpactReport = {
         sourceFile: file,
         functions: changedFunctions,
-        downstreamFiles: relativeDownstreamFiles,
+        downstreamFiles: relativeDownstreamFiles.map(item => item.file), // Convert to string array for backward compatibility
         tests: relativeTests,
         issues
     };
 
+    // Store line numbers map as a property on the report (not in the type definition for backward compatibility)
+    (report as any).downstreamFilesLineNumbers = downstreamFilesMap;
+    
     return {
         report,
         snapshotDiff

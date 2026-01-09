@@ -19,15 +19,28 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.buildApiSnapshot = exports.computeExportsDiff = exports.runAnalyzer = exports.apiDiffToFindings = exports.computeApiDiff = void 0;
+exports.apiDiffToFindings = exports.computeApiDiff = void 0;
+exports.runAnalyzer = runAnalyzer;
+exports.computeExportsDiff = computeExportsDiff;
+exports.buildApiSnapshot = buildApiSnapshot;
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const TypeScriptAnalyzer_js_1 = require("./analyzers/language/TypeScriptAnalyzer.js");
@@ -108,7 +121,6 @@ async function runAnalyzer(options) {
         filePaths: Array.from(filePaths).sort()
     };
 }
-exports.runAnalyzer = runAnalyzer;
 /**
  * Computes the diff between before and after export lists.
  * This is the key signal for breaking changes in regression testing.
@@ -156,7 +168,6 @@ function computeExportsDiff(before, after) {
         changed: changed.sort((a, b) => a.symbol.localeCompare(b.symbol))
     };
 }
-exports.computeExportsDiff = computeExportsDiff;
 /**
  * Converts a SymbolSnapshot to findings.
  * Focuses on exports (the public API surface) since that's what matters for breaking changes.
@@ -176,10 +187,10 @@ function snapshotToFindings(snapshot, repoRoot) {
         if (!seenSymbols.has(key)) {
             seenSymbols.add(key);
             findings.push({
-                ruleId: undefined,
-                severity: 'info',
+                ruleId: undefined, // Will be assigned during diff comparison
+                severity: 'info', // Will be updated based on breaking change detection
                 symbol: exp.name,
-                file: relativePath.replace(/\\/g, '/'),
+                file: relativePath.replace(/\\/g, '/'), // Normalize to forward slashes
                 kind: exp.kind,
                 isExported: true,
                 message: exp.type === 'default' ? 'default export' :
@@ -408,7 +419,7 @@ async function buildApiSnapshot(options) {
                 entrypointPath: absoluteEntrypointPath,
                 exports,
                 timestamp: new Date(),
-                partial: true,
+                partial: true, // Mark as partial since no type shapes
                 failedShapes: 0,
                 failedShapeNames: [],
                 moduleSystem: snapshot.moduleSystem,
@@ -456,5 +467,4 @@ async function buildApiSnapshot(options) {
         return null;
     }
 }
-exports.buildApiSnapshot = buildApiSnapshot;
 //# sourceMappingURL=regression-runner.js.map

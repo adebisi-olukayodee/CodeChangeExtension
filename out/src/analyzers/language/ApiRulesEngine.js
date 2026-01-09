@@ -4,7 +4,7 @@
  * Integrates with the existing breaking change rule system.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.apiDiffToFindings = void 0;
+exports.apiDiffToFindings = apiDiffToFindings;
 const EnhancedImpactReport_js_1 = require("../../types/EnhancedImpactReport.js");
 /**
  * Converts an API diff into breaking change findings with rule IDs.
@@ -55,7 +55,6 @@ function apiDiffToFindings(apiDiff, entrypointPath) {
     }
     return findings;
 }
-exports.apiDiffToFindings = apiDiffToFindings;
 /**
  * Gets the appropriate rule ID for a removed export based on its kind.
  */
