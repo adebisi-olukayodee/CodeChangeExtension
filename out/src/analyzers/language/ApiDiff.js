@@ -3,7 +3,7 @@
  * API Diff - compares API snapshots to detect breaking changes
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.computeApiDiff = void 0;
+exports.computeApiDiff = computeApiDiff;
 /**
  * Computes the diff between two API snapshots.
  */
@@ -86,7 +86,6 @@ function computeApiDiff(before, after) {
         renamed
     };
 }
-exports.computeApiDiff = computeApiDiff;
 /**
  * Checks if two shapes are equal (deep comparison).
  */

@@ -15,13 +15,23 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProfessionalImpactAnalyzer = void 0;
 const vscode = __importStar(require("vscode"));
@@ -54,9 +64,10 @@ class ProfessionalImpactAnalyzer {
         this.confidenceEngine = new ConfidenceEngine_1.ConfidenceEngine(configManager);
         // Create debug output channel
         this.debugOutputChannel = vscode.window.createOutputChannel('Impact Analyzer Debug');
-        // Clear debug log file on extension activation and show location
+        // Register output channel with debug logger so TypeScriptAnalyzer can use it
         try {
-            const { clearDebugLog, getDebugLogPath } = require('./debug-logger');
+            const { setDebugOutputChannel, clearDebugLog, getDebugLogPath } = require('./debug-logger');
+            setDebugOutputChannel(this.debugOutputChannel);
             clearDebugLog();
             const logPath = getDebugLogPath();
             console.log(`[Debug Logger] Log file location: ${logPath}`);
@@ -524,6 +535,26 @@ class ProfessionalImpactAnalyzer {
                         if (areEqual) {
                             // Disk matches current - no changes detected
                             this.debugLog(`✅ Baseline (disk) === Current - no changes detected`);
+                            // Determine project root for empty result
+                            let projectRootForEmpty;
+                            try {
+                                const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                                if (repoRoot) {
+                                    projectRootForEmpty = path.resolve(repoRoot);
+                                }
+                            }
+                            catch {
+                                // Ignore
+                            }
+                            if (!projectRootForEmpty) {
+                                const workspaceFolders = vscode.workspace.workspaceFolders;
+                                if (workspaceFolders && workspaceFolders.length > 0) {
+                                    projectRootForEmpty = workspaceFolders[0].uri.fsPath;
+                                }
+                                else {
+                                    projectRootForEmpty = path.dirname(filePath);
+                                }
+                            }
                             const emptyResult = {
                                 filePath,
                                 changedFunctions: [],
@@ -538,6 +569,7 @@ class ProfessionalImpactAnalyzer {
                                 timestamp: new Date(),
                                 hasActualChanges: false,
                                 baselineType: 'snapshot:lastSave',
+                                analysisRootAbs: projectRootForEmpty ? path.resolve(projectRootForEmpty) : undefined,
                                 baseline,
                                 currentVersion,
                                 parseStatus: {
@@ -564,6 +596,26 @@ class ProfessionalImpactAnalyzer {
                             availability: 'unavailable',
                             reason: `disk_read_error: ${diskError}`
                         };
+                        // Determine project root for empty result
+                        let projectRootForEmpty2;
+                        try {
+                            const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                            if (repoRoot) {
+                                projectRootForEmpty2 = path.resolve(repoRoot);
+                            }
+                        }
+                        catch {
+                            // Ignore
+                        }
+                        if (!projectRootForEmpty2) {
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                projectRootForEmpty2 = workspaceFolders[0].uri.fsPath;
+                            }
+                            else {
+                                projectRootForEmpty2 = path.dirname(filePath);
+                            }
+                        }
                         const emptyResult = {
                             filePath,
                             changedFunctions: [],
@@ -578,6 +630,7 @@ class ProfessionalImpactAnalyzer {
                             timestamp: new Date(),
                             hasActualChanges: false,
                             baselineType: 'none',
+                            analysisRootAbs: projectRootForEmpty2 ? path.resolve(projectRootForEmpty2) : undefined,
                             baseline,
                             currentVersion,
                             parseStatus: {
@@ -630,6 +683,26 @@ class ProfessionalImpactAnalyzer {
                     this.debugOutputChannel.show(true);
                 }
                 // Return empty result immediately
+                // Determine project root for empty result
+                let projectRootForEmpty3;
+                try {
+                    const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                    if (repoRoot) {
+                        projectRootForEmpty3 = path.resolve(repoRoot);
+                    }
+                }
+                catch {
+                    // Ignore
+                }
+                if (!projectRootForEmpty3) {
+                    const workspaceFolders = vscode.workspace.workspaceFolders;
+                    if (workspaceFolders && workspaceFolders.length > 0) {
+                        projectRootForEmpty3 = workspaceFolders[0].uri.fsPath;
+                    }
+                    else {
+                        projectRootForEmpty3 = path.dirname(filePath);
+                    }
+                }
                 const emptyResult = {
                     filePath,
                     changedFunctions: [],
@@ -644,6 +717,7 @@ class ProfessionalImpactAnalyzer {
                     timestamp: new Date(),
                     hasActualChanges: false,
                     baselineType,
+                    analysisRootAbs: projectRootForEmpty3 ? path.resolve(projectRootForEmpty3) : undefined,
                     baseline: {
                         ...baseline,
                         refName: baselineRef,
@@ -682,12 +756,68 @@ class ProfessionalImpactAnalyzer {
                 gitChanges = await this.gitAnalyzer.getFileChanges(filePath);
             }
             // Use AST-based diff for semantic change detection (works with any baseline source)
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            if (!workspaceFolder) {
-                throw new Error('No workspace folder found');
+            // Determine project root from the file path itself (handles multi-workspace scenarios)
+            let projectRoot;
+            // Strategy 1: Find Git repo root that contains the file (most accurate)
+            try {
+                // getRepoRoot uses gitAnalyzer.getRepoRoot which can work from any directory
+                const repoRoot = await this.gitAnalyzer.getRepoRoot(filePath);
+                if (repoRoot) {
+                    // Normalize paths for comparison (handle different separators)
+                    const normalizedRepoRoot = path.resolve(repoRoot).replace(/\\/g, '/');
+                    const normalizedFilePath = path.resolve(filePath).replace(/\\/g, '/');
+                    if (normalizedFilePath.startsWith(normalizedRepoRoot + '/') || normalizedFilePath === normalizedRepoRoot) {
+                        projectRoot = repoRoot;
+                        this.debugLog(`✅ Found project root from Git: ${projectRoot}`);
+                    }
+                    else {
+                        throw new Error(`Git repo root (${repoRoot}) does not contain file (${filePath})`);
+                    }
+                }
+                else {
+                    throw new Error('Git repo root not found');
+                }
             }
-            const projectRoot = workspaceFolder.uri.fsPath;
-            const relativeFilePath = path.relative(projectRoot, filePath);
+            catch (error) {
+                this.debugLog(`Git repo root lookup failed: ${error}`);
+                // Strategy 2: Find workspace folder that contains the file
+                const workspaceFolders = vscode.workspace.workspaceFolders || [];
+                const containingWorkspace = workspaceFolders.find(wf => {
+                    const workspacePath = wf.uri.fsPath;
+                    const normalizedWorkspace = workspacePath.replace(/\\/g, '/');
+                    const normalizedFile = filePath.replace(/\\/g, '/');
+                    return normalizedFile.startsWith(normalizedWorkspace + '/') || normalizedFile === normalizedWorkspace;
+                });
+                if (containingWorkspace) {
+                    projectRoot = containingWorkspace.uri.fsPath;
+                    this.debugLog(`✅ Found project root from workspace folder: ${projectRoot}`);
+                }
+                else if (workspaceFolders.length > 0) {
+                    // Strategy 3: Fallback to first workspace folder (old behavior)
+                    projectRoot = workspaceFolders[0].uri.fsPath;
+                    this.debugLog(`⚠️ Using first workspace folder as project root (fallback): ${projectRoot}`);
+                    this.debugLog(`⚠️ File path: ${filePath} may not be in this workspace`);
+                }
+                else {
+                    // Strategy 4: Use file's directory (last resort)
+                    projectRoot = path.dirname(filePath);
+                    this.debugLog(`⚠️ Using file directory as project root (last resort): ${projectRoot}`);
+                }
+            }
+            let relativeFilePath = path.relative(projectRoot, filePath);
+            // Validate that the relative path doesn't go up directories (file should be in project root)
+            if (relativeFilePath.startsWith('..') || path.isAbsolute(relativeFilePath)) {
+                this.debugLog(`⚠️ WARNING: Relative path calculation failed!`);
+                this.debugLog(`⚠️ Project root: ${projectRoot}`);
+                this.debugLog(`⚠️ File path: ${filePath}`);
+                this.debugLog(`⚠️ Relative path: ${relativeFilePath}`);
+                this.debugLog(`⚠️ File appears to be outside project root. Using file path directly.`);
+                // Fallback: use file path as-is (assume it's already relative or absolute)
+                relativeFilePath = path.basename(filePath);
+            }
+            this.debugLog(`Project root: ${projectRoot}`);
+            this.debugLog(`File path: ${filePath}`);
+            this.debugLog(`Relative file path: ${relativeFilePath}`);
             this.debugLog(`Calling analyzeImpact() with AST diff`);
             this.debugLog(`AST diff will analyze: baseline (${baselineType}) vs current content`);
             this.debugLog(`Before content hash: ${this.simpleHash(before)}`);
@@ -704,8 +834,8 @@ class ProfessionalImpactAnalyzer {
                 // Use analyzeImpactWithDiff to get both report and snapshotDiff (which contains breaking change info)
                 const impactResult = await (0, PureImpactAnalyzer_1.analyzeImpactWithDiff)({
                     file: relativeFilePath,
-                    before: before,
-                    after: after,
+                    before: before, // From Git HEAD or cached snapshot
+                    after: after, // Current file content
                     projectRoot: projectRoot
                 }, (msg) => this.debugLog(`[PureImpactAnalyzer] ${msg}`));
                 report = impactResult.report;
@@ -771,7 +901,7 @@ class ProfessionalImpactAnalyzer {
             const result = {
                 filePath,
                 changedFunctions: report.functions,
-                changedClasses: [],
+                changedClasses: [], // TODO: Extract from report if needed
                 changedModules: [],
                 affectedTests: report.tests,
                 downstreamComponents: report.downstreamFiles,
@@ -783,6 +913,7 @@ class ProfessionalImpactAnalyzer {
                 gitChanges,
                 hasActualChanges: true,
                 baselineType,
+                analysisRootAbs: path.resolve(projectRoot), // Store absolute project root for path resolution
                 baseline: {
                     ...baseline,
                     refName: baselineRef,
@@ -790,8 +921,19 @@ class ProfessionalImpactAnalyzer {
                     reason: fallbackReason || baseline?.reason
                 },
                 currentVersion,
-                parseStatus
+                parseStatus,
+                snapshotDiff, // Attach snapshotDiff for breaking change detection
+                downstreamFilesLineNumbers: report.downstreamFilesLineNumbers // Pass through line numbers for UI navigation
             };
+            // Debug logging for snapshotDiff attachment
+            if (snapshotDiff) {
+                this.debugLog(`✅ snapshotDiff attached to result`);
+                this.debugLog(`   exportChanges.removed: ${snapshotDiff.exportChanges?.removed?.length || 0}`);
+                this.debugLog(`   exportChanges.modified: ${snapshotDiff.exportChanges?.modified?.length || 0}`);
+                console.log(`[ProfessionalImpactAnalyzer] ✅ snapshotDiff attached to result`);
+                console.log(`[ProfessionalImpactAnalyzer]    exportChanges.removed: ${snapshotDiff.exportChanges?.removed?.length || 0}`);
+                console.log(`[ProfessionalImpactAnalyzer]    exportChanges.modified: ${snapshotDiff.exportChanges?.modified?.length || 0}`);
+            }
             // Show output channel
             if (this.debugOutputChannel) {
                 this.debugOutputChannel.show();
@@ -905,10 +1047,20 @@ class ProfessionalImpactAnalyzer {
     }
     calculateRiskLevelFromReport(report, snapshotDiff) {
         // If there are breaking changes, always mark as high risk
+        // Check for symbol-level breaking changes
         if (snapshotDiff?.changedSymbols) {
             const breakingChanges = snapshotDiff.changedSymbols.filter((s) => s.isBreaking);
             if (breakingChanges.length > 0) {
-                this.debugLog(`⚠️ Breaking changes detected: ${breakingChanges.length} - setting risk level to HIGH`);
+                this.debugLog(`⚠️ Breaking changes detected: ${breakingChanges.length} symbol changes - setting risk level to HIGH`);
+                return 'high';
+            }
+        }
+        // Check for export removals/modifications (these are always breaking changes)
+        if (snapshotDiff?.exportChanges) {
+            const removedExports = snapshotDiff.exportChanges.removed?.length || 0;
+            const modifiedExports = snapshotDiff.exportChanges.modified?.length || 0;
+            if (removedExports > 0 || modifiedExports > 0) {
+                this.debugLog(`⚠️ Breaking changes detected: ${removedExports} export removals, ${modifiedExports} export modifications - setting risk level to HIGH`);
                 return 'high';
             }
         }

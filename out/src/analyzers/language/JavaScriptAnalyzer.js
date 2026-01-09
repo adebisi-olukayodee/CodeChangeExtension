@@ -22,13 +22,23 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.JavaScriptAnalyzer = void 0;
 const ts = __importStar(require("typescript"));
@@ -138,7 +148,7 @@ class JavaScriptAnalyzer {
             this.project = new ts_morph_1.Project({
                 compilerOptions: {
                     allowJs: true,
-                    checkJs: false,
+                    checkJs: false, // Don't check JS - we're just parsing
                     noEmit: true,
                     skipLibCheck: true
                 }
@@ -188,10 +198,10 @@ class JavaScriptAnalyzer {
             timestamp: new Date(),
             functions,
             classes,
-            interfaces: [],
-            typeAliases: [],
-            enums: [],
-            exports: [...exports, ...cjsExports],
+            interfaces: [], // JS has no interfaces
+            typeAliases: [], // JS has no type aliases
+            enums: [], // JS has no enums
+            exports: [...exports, ...cjsExports], // Combine ESM and CJS exports
             imports,
             moduleSystem: detectedModuleSystem,
             packageJson: this.readPackageSnapshot(packageJsonPath)
@@ -241,7 +251,7 @@ class JavaScriptAnalyzer {
                         kind: 'variable'
                     },
                     changeType: 'modified',
-                    severity: 'medium',
+                    severity: 'medium', // Warning
                     isBreaking: false,
                     metadata: {
                         ruleId: 'JSAPI-MOD-001',
@@ -337,8 +347,9 @@ class JavaScriptAnalyzer {
             }
             // Handle export default on declarations: export default function/class/var
             // This prevents treating "export default function main() {}" as both default and named
-            const hasDefault = node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword);
-            const hasExport = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
+            const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+            const hasDefault = modifiers?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+            const hasExport = modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
             if (hasDefault && hasExport) {
                 // Default export: export default ...
                 // Determine the kind of default export
@@ -529,7 +540,7 @@ class JavaScriptAnalyzer {
                     kind: 'variable'
                 },
                 changeType: 'modified',
-                severity: 'medium',
+                severity: 'medium', // Warning
                 isBreaking: false,
                 metadata: {
                     ruleId: 'JSAPI-MOD-001',
@@ -550,7 +561,7 @@ class JavaScriptAnalyzer {
                     kind: 'variable'
                 },
                 changeType: 'modified',
-                severity: 'medium',
+                severity: 'medium', // Warning
                 isBreaking: false,
                 metadata: {
                     ruleId: 'JSAPI-MOD-001',
@@ -572,8 +583,9 @@ class JavaScriptAnalyzer {
         const visit = (node) => {
             if (ts.isFunctionDeclaration(node)) {
                 // Check if it's a default export - if so, skip (default exports are handled in extractExports)
-                const isDefaultExport = node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
-                const isExported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) || false;
+                const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+                const isDefaultExport = modifiers?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
+                const isExported = modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) || false;
                 // Only process named exports, not default exports
                 if (isExported && !isDefaultExport) {
                     const name = node.name?.text || 'anonymous';
@@ -611,8 +623,9 @@ class JavaScriptAnalyzer {
         const visit = (node) => {
             if (ts.isClassDeclaration(node)) {
                 // Check if it's a default export - if so, skip (default exports are handled in extractExports)
-                const isDefaultExport = node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
-                const isExported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) || false;
+                const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+                const isDefaultExport = modifiers?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword) || false;
+                const isExported = modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) || false;
                 // Only process named exports, not default exports
                 if (isExported && !isDefaultExport) {
                     const name = node.name?.text || 'anonymous';
@@ -651,7 +664,8 @@ class JavaScriptAnalyzer {
     }
     isPrivate(member) {
         // Check for private modifier or # prefix (private fields)
-        return member.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword) || false;
+        const modifiers = ts.canHaveModifiers(member) ? ts.getModifiers(member) : undefined;
+        return modifiers?.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword) || false;
     }
     getFunctionSignature(node) {
         const name = node.name?.text || 'anonymous';
@@ -855,8 +869,8 @@ class JavaScriptAnalyzer {
                         kind: beforeExport.kind || 'variable'
                     },
                     changeType: 'removed',
-                    severity: 'high',
-                    isBreaking: true,
+                    severity: 'high', // Breaking
+                    isBreaking: true, // Export removals are breaking
                     metadata: {
                         ruleId,
                         message
@@ -958,7 +972,7 @@ class JavaScriptAnalyzer {
                             isExported: true,
                             kind: afterExport.kind || 'variable'
                         },
-                        severity: 'high',
+                        severity: 'high', // Breaking
                         isBreaking: true,
                         metadata: {
                             ruleId,
@@ -992,10 +1006,10 @@ class JavaScriptAnalyzer {
                 changedSymbols.push({
                     symbol: beforeFunc,
                     changeType: 'removed',
-                    severity: 'medium',
-                    isBreaking: false,
+                    severity: 'medium', // Warning, not high
+                    isBreaking: false, // JS findings are not breaking
                     metadata: {
-                        ruleId: 'JSAPI-FN-001',
+                        ruleId: 'JSAPI-FN-001', // JS heuristic rule
                         message: `Exported function '${name}' was removed (heuristic - may miss runtime changes)`
                     }
                 });
@@ -1015,8 +1029,8 @@ class JavaScriptAnalyzer {
                             changeType: 'signature-changed',
                             before: beforeFunc,
                             after: afterFunc,
-                            severity: 'medium',
-                            isBreaking: false,
+                            severity: 'medium', // Warning
+                            isBreaking: false, // Not breaking in JS
                             metadata: {
                                 ruleId: 'JSAPI-FN-001',
                                 message: `Exported function '${name}' parameter count decreased (${beforeParamCount} -> ${afterParamCount}). Potential breaking change.`
@@ -1080,7 +1094,7 @@ class JavaScriptAnalyzer {
                 changedSymbols.push({
                     symbol: beforeClass,
                     changeType: 'removed',
-                    severity: 'high',
+                    severity: 'high', // Breaking
                     isBreaking: true,
                     metadata: {
                         ruleId: 'JSAPI-CLS-002',

@@ -15,18 +15,29 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SimpleImpactViewProvider = exports.ImpactViewItem = void 0;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const debug_logger_1 = require("../core/debug-logger");
 class ImpactViewItem extends vscode.TreeItem {
     constructor(label, type, collapsibleState) {
         super(label, collapsibleState);
@@ -895,6 +906,102 @@ class SimpleImpactViewProvider {
      */
     extractBreakingIssues(result) {
         const breakingIssues = [];
+        // FIRST: Check for export removals and modifications (highest priority breaking changes)
+        const snapshotDiff = result.snapshotDiff;
+        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: snapshotDiff exists: ${!!snapshotDiff}`);
+        if (snapshotDiff && snapshotDiff.exportChanges) {
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: exportChanges.removed length: ${snapshotDiff.exportChanges.removed?.length || 0}`);
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: exportChanges.modified length: ${snapshotDiff.exportChanges.modified?.length || 0}`);
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: exportChanges.added length: ${snapshotDiff.exportChanges.added?.length || 0}`);
+            // Check for removed exports
+            if (snapshotDiff.exportChanges.removed && snapshotDiff.exportChanges.removed.length > 0) {
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Processing ${snapshotDiff.exportChanges.removed.length} removed exports`);
+                for (let i = 0; i < snapshotDiff.exportChanges.removed.length; i++) {
+                    const removedExport = snapshotDiff.exportChanges.removed[i];
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Removed export ${i}: type=${typeof removedExport}, isObject=${typeof removedExport === 'object'}, keys=${typeof removedExport === 'object' && removedExport !== null ? Object.keys(removedExport).join(',') : 'N/A'}`);
+                    if (typeof removedExport === 'object' && removedExport !== null) {
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Removed export ${i} object: ${JSON.stringify(removedExport, null, 2)}`);
+                    }
+                    const exportName = typeof removedExport === 'object' && removedExport !== null && 'name' in removedExport
+                        ? removedExport.name
+                        : typeof removedExport === 'string'
+                            ? removedExport
+                            : 'unknown';
+                    const exportLine = typeof removedExport === 'object' && removedExport !== null && 'line' in removedExport
+                        ? removedExport.line
+                        : 0;
+                    // Check if there are specific breaking changes for this exported symbol
+                    const specificChanges = snapshotDiff?.changedSymbols?.filter((s) => s.isBreaking &&
+                        (s.symbol?.name === exportName || s.symbol?.qualifiedName === exportName)) || [];
+                    // If there are specific changes, include them in the message
+                    let message = `Export '${exportName}' was removed`;
+                    if (specificChanges.length > 0) {
+                        const specificMessages = specificChanges.map((c) => c.metadata?.message || `${c.changeType} detected`).join('; ');
+                        message += ` (also: ${specificMessages})`;
+                    }
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: ✅ Adding breaking issue for removed export: '${exportName}' at line ${exportLine}, specific changes: ${specificChanges.length}`);
+                    breakingIssues.push({
+                        severity: '🚨 Breaking Change',
+                        message: message,
+                        line: exportLine,
+                        category: 'Export Removal',
+                        file: result.filePath,
+                        recommendedFixes: [
+                            `Export '${exportName}' was removed - this is a breaking change`,
+                            specificChanges.length > 0 ? specificChanges.map((c) => c.metadata?.message).filter(Boolean).join('. ') : '',
+                            'Any code importing this export will break',
+                            'Consider deprecating the export first with a migration path',
+                            'Update all import statements before removing',
+                            'Document breaking change in CHANGELOG',
+                            'Consider version bump if breaking change is necessary'
+                        ].filter(Boolean) // Remove empty strings
+                    });
+                }
+            }
+            else {
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: No removed exports found (removed array is ${snapshotDiff.exportChanges.removed ? 'empty' : 'undefined/null'})`);
+            }
+            // Check for modified exports (signature changes, re-export changes, etc.)
+            if (snapshotDiff.exportChanges.modified && snapshotDiff.exportChanges.modified.length > 0) {
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Processing ${snapshotDiff.exportChanges.modified.length} modified exports`);
+                for (const modifiedExport of snapshotDiff.exportChanges.modified) {
+                    const exportName = typeof modifiedExport === 'object' && modifiedExport.name
+                        ? modifiedExport.name
+                        : typeof modifiedExport === 'object' && modifiedExport.after && modifiedExport.after.name
+                            ? modifiedExport.after.name
+                            : 'unknown';
+                    const exportLine = typeof modifiedExport === 'object' && modifiedExport.line
+                        ? modifiedExport.line
+                        : typeof modifiedExport === 'object' && modifiedExport.after && modifiedExport.after.line
+                            ? modifiedExport.after.line
+                            : 0;
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: ✅ Adding breaking issue for modified export: '${exportName}' at line ${exportLine}`);
+                    breakingIssues.push({
+                        severity: '🚨 Breaking Change',
+                        message: `Export '${exportName}' was modified (signature or source changed)`,
+                        line: exportLine,
+                        category: 'Export Modification',
+                        file: result.filePath,
+                        recommendedFixes: [
+                            `Export '${exportName}' was modified - this may be a breaking change`,
+                            'Review the changes to ensure backward compatibility',
+                            'Update all import statements if the API contract changed',
+                            'Document breaking changes in CHANGELOG',
+                            'Consider version bump if breaking change is necessary'
+                        ]
+                    });
+                }
+            }
+            else {
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: No modified exports found (modified array is ${snapshotDiff.exportChanges.modified ? 'empty' : 'undefined/null'})`);
+            }
+        }
+        else {
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: snapshotDiff or exportChanges is missing`);
+            if (snapshotDiff) {
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: snapshotDiff exists but exportChanges is ${snapshotDiff.exportChanges ? 'present' : 'missing'}`);
+            }
+        }
         // Get fix recommendations from Contracts & Architecture metric
         let contractsMetric = null;
         if (result.confidenceResult) {
@@ -945,17 +1052,109 @@ class SimpleImpactViewProvider {
         // Downstream components that depend on changed code
         if (uniqueDownstream.length > 0) {
             const changedFilePath = result.filePath;
+            // Check if line numbers are available from the report
+            const downstreamFilesLineNumbers = result.downstreamFilesLineNumbers;
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: downstreamFilesLineNumbers exists: ${!!downstreamFilesLineNumbers}`);
+            if (downstreamFilesLineNumbers) {
+                const keys = Object.keys(downstreamFilesLineNumbers);
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Line numbers map has ${keys.length} entries`);
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Sample keys: ${keys.slice(0, 3).join(', ')}`);
+                // Debug: Show actual values in the map
+                keys.slice(0, 3).forEach(key => {
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Map entry: '${key}' = ${downstreamFilesLineNumbers[key]}`);
+                });
+            }
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: uniqueDownstream count: ${uniqueDownstream.length}, sample: ${uniqueDownstream.slice(0, 3).join(', ')}`);
             for (const component of uniqueDownstream) {
-                // Find the import line in the downstream file that imports from the changed file
-                const importLine = this.findImportLine(component, changedFilePath);
+                // Ensure component path is absolute for file opening
+                const pathModule = require('path');
+                const fsModule = require('fs');
+                // Use analysisRootAbs from result if available, otherwise fallback to workspace
+                const analysisRoot = result.analysisRootAbs;
+                let absoluteComponentPath;
+                if (pathModule.isAbsolute(component)) {
+                    absoluteComponentPath = component;
+                }
+                else if (analysisRoot) {
+                    // Resolve relative to analysis root (correct workspace)
+                    absoluteComponentPath = pathModule.resolve(analysisRoot, component);
+                }
+                else {
+                    // Fallback: resolve relative to workspace root
+                    const workspaceFolders = vscode.workspace.workspaceFolders;
+                    if (workspaceFolders && workspaceFolders.length > 0) {
+                        absoluteComponentPath = pathModule.resolve(workspaceFolders[0].uri.fsPath, component);
+                    }
+                    else {
+                        // Last resort: resolve relative to current file
+                        absoluteComponentPath = pathModule.resolve(pathModule.dirname(changedFilePath), component);
+                    }
+                }
+                // Validate file exists before adding to issues
+                if (!fsModule.existsSync(absoluteComponentPath)) {
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] ⚠️ File not found: ${absoluteComponentPath} (root mismatch - analysisRoot: ${analysisRoot || 'none'})`);
+                    // Still add the issue but with a warning message
+                }
+                // Try to get line number from report first (more accurate)
+                // FIX: Treat 0 as valid line number, only undefined/null as missing
+                let importLine = undefined;
+                if (downstreamFilesLineNumbers) {
+                    // Try exact match first with both absolute and original component path
+                    const lineFromComponent = downstreamFilesLineNumbers[component];
+                    const lineFromAbsolute = downstreamFilesLineNumbers[absoluteComponentPath];
+                    // Only use value if it's not undefined/null (0 is valid!)
+                    if (lineFromComponent !== undefined && lineFromComponent !== null) {
+                        importLine = lineFromComponent;
+                    }
+                    else if (lineFromAbsolute !== undefined && lineFromAbsolute !== null) {
+                        importLine = lineFromAbsolute;
+                    }
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Exact match lookup for '${component}' (absolute: '${absoluteComponentPath}'): ${importLine !== undefined ? importLine : 'not found'}`);
+                    // If not found, try normalized path matching (handle path separator differences)
+                    if (importLine === undefined) {
+                        const normalizedComponent = component.replace(/\\/g, '/');
+                        const normalizedAbsolute = absoluteComponentPath.replace(/\\/g, '/');
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Trying normalized match for '${normalizedComponent}' and '${normalizedAbsolute}'`);
+                        for (const [key, lineNum] of Object.entries(downstreamFilesLineNumbers)) {
+                            const normalizedKey = key.replace(/\\/g, '/');
+                            if (normalizedKey === normalizedComponent || normalizedKey === normalizedAbsolute) {
+                                // Only use if not undefined/null
+                                if (lineNum !== undefined && lineNum !== null) {
+                                    importLine = lineNum;
+                                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Found line number via path normalization: '${component}' -> '${key}' = ${lineNum}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (importLine !== undefined) {
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: ✅ Found line number for '${component}': ${importLine}`);
+                    }
+                    else {
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: ❌ Line number not found for '${component}' in map`);
+                    }
+                }
+                // Fallback to finding import line manually if not available
+                if (importLine === undefined) {
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Using findImportLine fallback for '${component}'`);
+                    const fallbackLine = this.findImportLine(absoluteComponentPath, changedFilePath);
+                    // Only use fallback if it returns a valid number (0 is valid!)
+                    if (fallbackLine !== undefined && fallbackLine !== null) {
+                        importLine = fallbackLine;
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: findImportLine returned: ${importLine}`);
+                    }
+                    else {
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: findImportLine returned undefined/null`);
+                    }
+                }
                 breakingIssues.push({
                     severity: '⚠️ Risk',
-                    message: `Depends on changed code: ${require('path').basename(component)}`,
-                    line: importLine,
+                    message: `Depends on changed code: ${pathModule.basename(component)}`,
+                    line: importLine !== undefined ? importLine : -1, // Use -1 as sentinel for "unknown line" (file can still be opened, just not navigated to a line)
                     category: 'Downstream Impact',
-                    file: component,
+                    file: absoluteComponentPath, // Use absolute path for file opening
                     recommendedFixes: [
-                        `Review ${require('path').basename(component)} to ensure compatibility`,
+                        `Review ${pathModule.basename(component)} to ensure compatibility`,
                         'Run tests for dependent components',
                         'Update dependent code if API contract changed',
                         'Check for compilation/runtime errors in dependent files',
@@ -966,15 +1165,42 @@ class SimpleImpactViewProvider {
         }
         // Test Impact - Affected tests that might fail (included in "What Will Break")
         if (uniqueAffectedTests.length > 0) {
+            const pathModule = require('path');
+            const fsModule = require('fs');
+            const analysisRoot = result.analysisRootAbs;
             for (const test of uniqueAffectedTests) {
+                // Ensure test path is absolute for file opening
+                let absoluteTestPath;
+                if (pathModule.isAbsolute(test)) {
+                    absoluteTestPath = test;
+                }
+                else if (analysisRoot) {
+                    // Resolve relative to analysis root (correct workspace)
+                    absoluteTestPath = pathModule.resolve(analysisRoot, test);
+                }
+                else {
+                    // Fallback: resolve relative to workspace root
+                    const workspaceFolders = vscode.workspace.workspaceFolders;
+                    if (workspaceFolders && workspaceFolders.length > 0) {
+                        absoluteTestPath = pathModule.resolve(workspaceFolders[0].uri.fsPath, test);
+                    }
+                    else {
+                        // Last resort: resolve relative to current file
+                        absoluteTestPath = pathModule.resolve(pathModule.dirname(result.filePath), test);
+                    }
+                }
+                // Validate file exists
+                if (!fsModule.existsSync(absoluteTestPath)) {
+                    (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] ⚠️ Test file not found: ${absoluteTestPath} (root mismatch - analysisRoot: ${analysisRoot || 'none'})`);
+                }
                 breakingIssues.push({
                     severity: '🧪 Test Risk',
-                    message: `Test may fail: ${require('path').basename(test)}`,
+                    message: `Test may fail: ${pathModule.basename(test)}`,
                     line: 0,
                     category: 'Test Impact',
-                    file: test,
+                    file: absoluteTestPath, // Use absolute path for file opening
                     recommendedFixes: [
-                        `Run ${require('path').basename(test)} to verify it passes`,
+                        `Run ${pathModule.basename(test)} to verify it passes`,
                         'Update test expectations if behavior changed intentionally',
                         'Add test coverage for new functionality if missing',
                         'Fix test assertions if they are now incorrect',
@@ -983,16 +1209,69 @@ class SimpleImpactViewProvider {
                 });
             }
         }
-        // API Breaking Changes - These are about the public contract changing, 
-        // NOT about whether we found downstream dependencies in this workspace.
-        // A breaking change exists if the API surface became stricter/incompatible,
-        // regardless of whether this workspace contains callers.
+        // API Breaking Changes - Use snapshotDiff.changedSymbols for specific change details
+        // This gives us the exact change type (parameter optional→required, type changed, etc.)
         const isHighRiskBreakingChange = result.riskLevel === 'high';
+        // Extract specific breaking changes from snapshotDiff.changedSymbols
+        if (snapshotDiff && snapshotDiff.changedSymbols) {
+            const breakingSymbolChanges = snapshotDiff.changedSymbols.filter((s) => s.isBreaking);
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: snapshotDiff.changedSymbols count: ${snapshotDiff.changedSymbols.length}`);
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: breaking changes count: ${breakingSymbolChanges.length}`);
+            breakingSymbolChanges.forEach((change, idx) => {
+                (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Breaking change ${idx}: symbol=${change.symbol?.name || 'unknown'}, kind=${change.symbol?.kind || 'unknown'}, message=${change.metadata?.message || 'no message'}, changeType=${change.changeType || 'unknown'}`);
+            });
+            if (breakingSymbolChanges.length > 0) {
+                for (const change of breakingSymbolChanges) {
+                    // Use the specific message from metadata if available
+                    const specificMessage = change.metadata?.message ||
+                        (change.changeType === 'signature-changed' ? 'Signature changed' :
+                            change.changeType === 'type-changed' ? 'Type changed' :
+                                'Breaking change detected');
+                    // Get symbol name and kind
+                    const symbolName = change.symbol?.name || change.symbol?.qualifiedName || 'unknown';
+                    const symbolKind = change.symbol?.kind || 'symbol';
+                    const symbolLine = change.symbol?.line || 0;
+                    // Create category based on symbol kind
+                    let category = 'API Breaking Change';
+                    if (symbolKind === 'interface') {
+                        category = 'Interface Breaking Change';
+                    }
+                    else if (symbolKind === 'class') {
+                        category = 'Class Breaking Change';
+                    }
+                    else if (symbolKind === 'function' || symbolKind === 'method') {
+                        category = 'Function Breaking Change';
+                    }
+                    else if (symbolKind === 'type') {
+                        category = 'Type Breaking Change';
+                    }
+                    breakingIssues.push({
+                        severity: '🚨 Breaking Change',
+                        message: `${symbolName}: ${specificMessage}`,
+                        line: symbolLine,
+                        category: category,
+                        file: result.filePath,
+                        recommendedFixes: [
+                            `Breaking change: ${specificMessage}`,
+                            'This may break existing callers (even if none found in this workspace)',
+                            'Review all call sites and update them before deploying',
+                            change.metadata?.ruleId ? `Rule: ${change.metadata.ruleId}` : '',
+                            'Consider maintaining backward compatibility with overloads or defaults',
+                            'Document breaking change in CHANGELOG',
+                            'Consider version bump if breaking change is necessary'
+                        ].filter(Boolean) // Remove empty strings
+                    });
+                }
+            }
+        }
         // Always show breaking changes if API contract changed (riskLevel === 'high')
         // This is independent of whether we found downstream dependencies
         if (isHighRiskBreakingChange) {
-            // Show breaking changes for changed functions (API signature changes)
-            if (uniqueChangedFunctions.length > 0) {
+            // Show breaking changes for changed functions (if not already covered by snapshotDiff)
+            // Only show if snapshotDiff doesn't have detailed info
+            const hasDetailedInfo = snapshotDiff?.changedSymbols?.some((s) => s.isBreaking &&
+                (s.symbol.kind === 'function' || s.symbol.kind === 'method'));
+            if (!hasDetailedInfo && uniqueChangedFunctions.length > 0) {
                 for (const func of uniqueChangedFunctions) {
                     breakingIssues.push({
                         severity: '🚨 Breaking Change',
@@ -1011,8 +1290,9 @@ class SimpleImpactViewProvider {
                     });
                 }
             }
-            // Show breaking changes for changed classes (API contract changes)
-            if (uniqueChangedClasses.length > 0) {
+            // Show breaking changes for changed classes (if not already covered)
+            const hasDetailedClassInfo = snapshotDiff?.changedSymbols?.some((s) => s.isBreaking && s.symbol.kind === 'class');
+            if (!hasDetailedClassInfo && uniqueChangedClasses.length > 0) {
                 for (const cls of uniqueChangedClasses) {
                     breakingIssues.push({
                         severity: '🚨 Breaking Change',
@@ -1033,7 +1313,8 @@ class SimpleImpactViewProvider {
             }
             // Fallback: If risk is HIGH but no specific functions/classes captured, 
             // still show a breaking change warning
-            if (uniqueChangedFunctions.length === 0 && uniqueChangedClasses.length === 0) {
+            if (uniqueChangedFunctions.length === 0 && uniqueChangedClasses.length === 0 &&
+                (!snapshotDiff?.changedSymbols || snapshotDiff.changedSymbols.filter((s) => s.isBreaking).length === 0)) {
                 breakingIssues.push({
                     severity: '🚨 Breaking Change',
                     message: `API breaking change detected in ${result.filePath}`,
@@ -1096,6 +1377,14 @@ class SimpleImpactViewProvider {
             }
             seenIssues.add(key);
             dedupedIssues.push(issue);
+        }
+        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Final result - ${dedupedIssues.length} breaking issues (${breakingIssues.length} before deduplication)`);
+        if (dedupedIssues.length > 0) {
+            const byCategory = new Map();
+            for (const issue of dedupedIssues) {
+                byCategory.set(issue.category, (byCategory.get(issue.category) || 0) + 1);
+            }
+            (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] extractBreakingIssues: Issues by category: ${Array.from(byCategory.entries()).map(([cat, count]) => `${cat}:${count}`).join(', ')}`);
         }
         return dedupedIssues;
     }
@@ -1226,8 +1515,9 @@ class SimpleImpactViewProvider {
             }
             for (const issue of issues) {
                 // For impact issues (no line number), show file path instead
-                const label = issue.line > 0
-                    ? `Line ${issue.line}: ${issue.message}`
+                // Line numbers are 0-based, so display as 1-based for user (add 1)
+                const label = issue.line >= 0
+                    ? `Line ${issue.line + 1}: ${issue.message}`
                     : `${issue.message}${issue.file ? ` (${require('path').basename(issue.file)})` : ''}`;
                 // Check if this issue has recommended fixes
                 const hasFixes = issue.recommendedFixes && issue.recommendedFixes.length > 0;
@@ -1273,24 +1563,71 @@ class SimpleImpactViewProvider {
                 }
                 issueItem.analysisResult = { issue, filePath };
                 // For issues with line numbers, add navigation command
-                if (issue.line > 0 && (issue.file || filePath)) {
-                    const targetPath = issue.file || filePath;
-                    issueItem.command = {
-                        command: 'vscode.open',
-                        title: 'Go to Line',
-                        arguments: [
-                            vscode.Uri.file(targetPath),
-                            { selection: new vscode.Range(issue.line - 1, 0, issue.line - 1, 0) }
-                        ]
-                    };
+                // Line numbers are stored as 0-based, so 0 is valid (first line)
+                // -1 means "unknown line" - still allow opening file, but don't navigate to a line
+                if (issue.line >= 0 && (issue.file || filePath)) {
+                    const pathModule = require('path');
+                    const fsModule = require('fs');
+                    let targetPath = issue.file || filePath;
+                    // Resolve to absolute path if needed
+                    if (targetPath && !pathModule.isAbsolute(targetPath)) {
+                        const analysisRoot = inferredResult?.analysisRootAbs;
+                        if (analysisRoot) {
+                            targetPath = pathModule.resolve(analysisRoot, targetPath);
+                        }
+                        else {
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                targetPath = pathModule.resolve(workspaceFolders[0].uri.fsPath, targetPath);
+                            }
+                        }
+                    }
+                    // Validate file exists
+                    if (targetPath && fsModule.existsSync(targetPath)) {
+                        // issue.line is already 0-based, use it directly
+                        issueItem.command = {
+                            command: 'vscode.open',
+                            title: 'Go to Line',
+                            arguments: [
+                                vscode.Uri.file(targetPath),
+                                { selection: new vscode.Range(issue.line, 0, issue.line, 0) }
+                            ]
+                        };
+                    }
+                    else if (targetPath) {
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] ⚠️ File not found: ${targetPath} (root mismatch)`);
+                    }
                 }
                 else if (issue.file) {
                     // For impact issues with file path, open file
-                    issueItem.command = {
-                        command: 'vscode.open',
-                        title: 'Open File',
-                        arguments: [vscode.Uri.file(issue.file)]
-                    };
+                    const pathModule = require('path');
+                    const fsModule = require('fs');
+                    let fileToOpen = issue.file;
+                    // Resolve to absolute path if needed
+                    if (!pathModule.isAbsolute(fileToOpen)) {
+                        const analysisRoot = inferredResult?.analysisRootAbs;
+                        if (analysisRoot) {
+                            fileToOpen = pathModule.resolve(analysisRoot, fileToOpen);
+                        }
+                        else {
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                fileToOpen = pathModule.resolve(workspaceFolders[0].uri.fsPath, fileToOpen);
+                            }
+                        }
+                    }
+                    // Validate file exists
+                    if (fsModule.existsSync(fileToOpen)) {
+                        issueItem.command = {
+                            command: 'vscode.open',
+                            title: 'Open File',
+                            arguments: [vscode.Uri.file(fileToOpen)]
+                        };
+                    }
+                    else {
+                        (0, debug_logger_1.debugLog)(`[SimpleImpactViewProvider] ⚠️ File not found: ${fileToOpen} (root mismatch - analysisRoot: ${inferredResult?.analysisRootAbs || 'none'})`);
+                        vscode.window.showWarningMessage(`File not found: ${fileToOpen} (root mismatch)`);
+                    }
                 }
                 items.push(issueItem);
             }
@@ -1598,18 +1935,22 @@ class SimpleImpactViewProvider {
             const filePath = detailElement.analysisResult.filePath;
             if (subMetric.issues && Array.isArray(subMetric.issues)) {
                 for (const issue of subMetric.issues) {
-                    if (typeof issue === 'object' && issue.message && issue.line) {
-                        const issueItem = new ImpactViewItem(`Line ${issue.line}: ${issue.message}`, 'issue', vscode.TreeItemCollapsibleState.None);
+                    if (typeof issue === 'object' && issue.message && issue.line !== undefined) {
+                        // Display as 1-based for user (add 1), but use 0-based for Range
+                        const displayLine = issue.line >= 0 ? issue.line + 1 : '?';
+                        const issueItem = new ImpactViewItem(`Line ${displayLine}: ${issue.message}`, 'issue', vscode.TreeItemCollapsibleState.None);
                         issueItem.iconPath = new vscode.ThemeIcon('warning');
-                        issueItem.description = `Line ${issue.line}`;
-                        issueItem.command = {
-                            command: 'vscode.open',
-                            title: 'Go to Line',
-                            arguments: [
-                                vscode.Uri.file(filePath),
-                                { selection: new vscode.Range(issue.line - 1, 0, issue.line - 1, 0) }
-                            ]
-                        };
+                        issueItem.description = `Line ${displayLine}`;
+                        if (issue.line >= 0) {
+                            issueItem.command = {
+                                command: 'vscode.open',
+                                title: 'Go to Line',
+                                arguments: [
+                                    vscode.Uri.file(filePath),
+                                    { selection: new vscode.Range(issue.line, 0, issue.line, 0) }
+                                ]
+                            };
+                        }
                         items.push(issueItem);
                     }
                     else if (typeof issue === 'string') {
@@ -1856,7 +2197,7 @@ class SimpleImpactViewProvider {
                 ? changedFile
                 : path.resolve(workspaceRoot, changedFile);
             if (!fs.existsSync(resolvedDownstreamFile)) {
-                return 0;
+                return undefined; // File not found - return undefined, not 0
             }
             const content = fs.readFileSync(resolvedDownstreamFile, 'utf8');
             const lines = content.split('\n');
@@ -1886,16 +2227,18 @@ class SimpleImpactViewProvider {
                 const line = lines[i];
                 for (const pattern of importPatterns) {
                     if (pattern.test(line)) {
-                        return i + 1; // Line numbers are 1-based
+                        return i; // Return 0-based line number (0 is valid for first line)
                     }
                 }
             }
+            // No match found - return undefined, not 0
+            return undefined;
         }
         catch (error) {
-            // If there's an error, just return 0 (will open file without line navigation)
+            // If there's an error, return undefined (not 0)
             console.warn(`[SimpleImpactViewProvider] Error finding import line in ${downstreamFile}:`, error);
+            return undefined;
         }
-        return 0;
     }
     /**
      * Escape special regex characters in a string

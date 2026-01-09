@@ -15,15 +15,26 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deactivate = exports.activate = void 0;
+exports.activate = activate;
+exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const ProfessionalImpactAnalyzer_1 = require("./core/ProfessionalImpactAnalyzer");
 const SimpleImpactViewProvider_1 = require("./ui/SimpleImpactViewProvider");
@@ -161,6 +172,32 @@ function extractBreakingIssues(result) {
 function activate(context) {
     console.log('Real-Time Impact Analyzer extension is now active!');
     try {
+        // Step C: Runtime guard to prevent TypeScript version mismatches
+        // This prevents regressions where ts and ts-morph use different TypeScript versions
+        try {
+            const ts = require('typescript');
+            const tsMorph = require('ts-morph');
+            const tsVersion = ts.version;
+            const tsMorphTsVersion = tsMorph.ts.version;
+            if (tsVersion !== tsMorphTsVersion) {
+                const errorMsg = `TypeScript version mismatch detected: typescript=${tsVersion} ts-morph.ts=${tsMorphTsVersion}. This will cause AST parsing issues. Please ensure package.json has matching versions.`;
+                console.error(errorMsg);
+                vscode.window.showErrorMessage(`Impact Analyzer: TypeScript version mismatch (${tsVersion} vs ${tsMorphTsVersion}). Analysis may be unreliable. Check extension logs.`, 'Show Logs').then(selection => {
+                    if (selection === 'Show Logs') {
+                        vscode.commands.executeCommand('workbench.action.output.toggleOutput');
+                    }
+                });
+                // In production, we could disable analysis here, but for now we just warn
+                // throw new Error(errorMsg); // Uncomment to hard-fail in dev builds
+            }
+            else {
+                console.log(`✅ TypeScript versions aligned: ${tsVersion} (typescript) === ${tsMorphTsVersion} (ts-morph.ts)`);
+            }
+        }
+        catch (versionCheckError) {
+            console.warn('Failed to check TypeScript version alignment:', versionCheckError);
+            // Continue anyway - version check failure shouldn't block activation
+        }
         // Initialize core services
         const configManager = new ConfigurationManager_1.ConfigurationManager();
         // Baseline cache is session-only (in-memory) - starts fresh on each extension reload
@@ -522,9 +559,7 @@ function activate(context) {
         vscode.window.showErrorMessage('Failed to activate Real-Time Impact Analyzer. Check the console for details.');
     }
 }
-exports.activate = activate;
 function deactivate() {
     console.log('Real-Time Impact Analyzer extension is now deactivated');
 }
-exports.deactivate = deactivate;
 //# sourceMappingURL=extension.js.map

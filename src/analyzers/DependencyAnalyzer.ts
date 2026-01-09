@@ -2,11 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { CodeAnalysisResult } from './CodeAnalyzer';
+import { debugLog } from '../core/debug-logger';
 
 interface ImportInfo {
     from: string; // File that imports
     to: string;   // Resolved absolute path of imported file
     specifier: string; // Original import specifier (e.g., '../lib')
+    lineNumber: number; // Line number where import occurs (1-based)
 }
 
 interface ExportInfo {
@@ -19,6 +21,7 @@ interface ExportInfo {
 
 export class DependencyAnalyzer {
     private reverseDeps: Map<string, Set<string>> = new Map(); // target -> Set<importers>
+    private importLineNumbers: Map<string, Map<string, number>> = new Map(); // target -> Map<importer, lineNumber>
     private exportGraph: Map<string, Map<string, ExportInfo>> = new Map(); // modulePath -> Map<exportName, ExportInfo>
     private tsConfigCache: Map<string, { options: ts.CompilerOptions; host: ts.ModuleResolutionHost }> = new Map();
     
@@ -26,8 +29,9 @@ export class DependencyAnalyzer {
      * Build reverse import graph by scanning all TypeScript files in the project
      */
     async buildReverseImportGraph(projectRoot: string): Promise<void> {
-        console.log(`[DependencyAnalyzer] Building reverse import graph from: ${projectRoot}`);
+        debugLog(`[DependencyAnalyzer] Building reverse import graph from: ${projectRoot}`);
         this.reverseDeps.clear();
+        this.importLineNumbers.clear();
         this.exportGraph.clear();
         
         const allTsFiles: string[] = [];
@@ -54,7 +58,7 @@ export class DependencyAnalyzer {
         };
         
         collectFiles(projectRoot);
-        console.log(`[DependencyAnalyzer] Found ${allTsFiles.length} TypeScript files`);
+        debugLog(`[DependencyAnalyzer] Found ${allTsFiles.length} TypeScript files`);
         
         // Get TypeScript compiler options for module resolution
         const tsConfig = this.findTsConfig(projectRoot);
@@ -86,15 +90,42 @@ export class DependencyAnalyzer {
                         for (const key of keys) {
                             if (!this.reverseDeps.has(key)) {
                                 this.reverseDeps.set(key, new Set());
+                                this.importLineNumbers.set(key, new Map());
                             }
                             for (const fromKey of fromKeys) {
                                 this.reverseDeps.get(key)!.add(fromKey);
+                                // Store line number for this import - ONLY if valid (>= 0)
+                                // Convert from 1-based (from ImportInfo) to 0-based for storage
+                                const lineNumber0Based = imp.lineNumber > 0 ? imp.lineNumber - 1 : undefined;
+                                
+                                if (typeof lineNumber0Based === 'number' && lineNumber0Based >= 0) {
+                                    if (!this.importLineNumbers.get(key)!.has(fromKey)) {
+                                        this.importLineNumbers.get(key)!.set(fromKey, lineNumber0Based);
+                                        // Debug: Log when storing imports to packages/ui/src/index.ts
+                                        if (key.includes('packages/ui/src/index')) {
+                                            debugLog(`[DependencyAnalyzer] ✅ STORED line number (0-based): ${lineNumber0Based} (1-based: ${imp.lineNumber}) for import from '${fromKey}' to '${key}' (specifier: '${imp.specifier}')`);
+                                        }
+                                    } else {
+                                        // If already exists, use the first occurrence (earlier line)
+                                        const existingLine = this.importLineNumbers.get(key)!.get(fromKey)!;
+                                        if (lineNumber0Based < existingLine) {
+                                            this.importLineNumbers.get(key)!.set(fromKey, lineNumber0Based);
+                                            if (key.includes('packages/ui/src/index')) {
+                                                debugLog(`[DependencyAnalyzer] ✅ UPDATED line number (0-based): ${lineNumber0Based} (was ${existingLine}) for import from '${fromKey}' to '${key}'`);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Do NOT store invalid line numbers
+                                    debugLog(`[DependencyAnalyzer] ⚠️ Skipping invalid line number: ${imp.lineNumber} for import from '${fromKey}' to '${key}' (specifier: '${imp.specifier}')`);
+                                }
                             }
                         }
                         
-                        const fromRel = path.relative(projectRoot, normalizedFrom);
-                        const toRel = path.relative(projectRoot, normalizedResolved);
-                        console.log(`[DependencyAnalyzer]   ${fromRel} imports ${toRel} (from '${imp.specifier}')`);
+                        // Debug: Log imports that resolve to packages/ui/src/index.ts
+                        if (normalizedResolved.includes('packages/ui/src/index')) {
+                            debugLog(`[DependencyAnalyzer] ✅ GRAPH BUILD: Found import to packages/ui/src/index.ts: '${imp.specifier}' from ${normalizedFrom} resolves to ${normalizedResolved} (line ${imp.lineNumber})`);
+                        }
                     }
                 }
                 
@@ -116,7 +147,7 @@ export class DependencyAnalyzer {
     }
     
     /**
-     * Parse import statements using TypeScript module resolution
+     * Parse import statements using TypeScript AST (more accurate than regex)
      */
     private parseImportsWithTS(
         content: string,
@@ -127,63 +158,147 @@ export class DependencyAnalyzer {
     ): Array<ImportInfo & { resolved?: string }> {
         const imports: Array<ImportInfo & { resolved?: string }> = [];
         
-        // Extract import specifiers using regex (we'll resolve them with TS)
-        const importPatterns = [
-            /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g,
-            /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-            /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-        ];
+        // Create TypeScript AST from source content
+        const sourceFile = ts.createSourceFile(
+            filePath,
+            content,
+            compilerOptions.target || ts.ScriptTarget.Latest,
+            true // setParentNodes
+        );
         
-        const specifiers = new Set<string>();
-        for (const pattern of importPatterns) {
-            let match;
-            while ((match = pattern.exec(content)) !== null) {
-                const specifier = match[1];
-                // Skip external packages (but include relative and absolute paths)
-                if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('@')) {
-                    specifiers.add(specifier);
+        // Helper to get line number from AST node (0-based, we'll convert to 1-based)
+        const getLineNumber = (node: ts.Node): number => {
+            const pos = node.getStart(sourceFile);
+            const lineAndChar = sourceFile.getLineAndCharacterOfPosition(pos);
+            return lineAndChar.line; // 0-based line number
+        };
+        
+        // Helper to extract module specifier string from node
+        const getModuleSpecifier = (node: ts.Node): string | null => {
+            if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+                return node.text;
+            }
+            return null;
+        };
+        
+        // Visit all nodes in the AST
+        const visit = (node: ts.Node): void => {
+            // Handle: import ... from 'module'
+            if (ts.isImportDeclaration(node) && node.moduleSpecifier) {
+                const specifier = getModuleSpecifier(node.moduleSpecifier);
+                if (specifier && (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('@'))) {
+                    const lineNumber = getLineNumber(node);
+                    this.processImportSpecifier(specifier, filePath, projectRoot, compilerOptions, host, lineNumber, imports);
                 }
             }
-        }
-        
-        // Resolve each specifier using TypeScript
-        for (const specifier of specifiers) {
-            try {
-                const resolved = ts.resolveModuleName(specifier, filePath, compilerOptions, host);
-                if (resolved.resolvedModule) {
-                    imports.push({
-                        from: filePath,
-                        to: resolved.resolvedModule.resolvedFileName,
-                        specifier: specifier,
-                        resolved: resolved.resolvedModule.resolvedFileName
-                    });
-                } else {
-                    // Fallback to old resolution method
-                    const fallbackResolved = this.resolveImport(specifier, filePath, projectRoot);
-                    if (fallbackResolved) {
-                        imports.push({
-                            from: filePath,
-                            to: fallbackResolved,
-                            specifier: specifier,
-                            resolved: fallbackResolved
-                        });
+            
+            // Handle: import x = require('module')
+            if (ts.isImportEqualsDeclaration(node) && node.moduleReference) {
+                if (ts.isExternalModuleReference(node.moduleReference) && node.moduleReference.expression) {
+                    const specifier = getModuleSpecifier(node.moduleReference.expression);
+                    if (specifier && (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('@'))) {
+                        const lineNumber = getLineNumber(node);
+                        this.processImportSpecifier(specifier, filePath, projectRoot, compilerOptions, host, lineNumber, imports);
                     }
                 }
-            } catch (error) {
-                // Fallback to old resolution method on error
+            }
+            
+            // Handle: require('module') or import('module')
+            if (ts.isCallExpression(node)) {
+                // Check for require('module')
+                if (ts.isIdentifier(node.expression) && node.expression.text === 'require' && node.arguments.length > 0) {
+                    const specifier = getModuleSpecifier(node.arguments[0]);
+                    if (specifier && (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('@'))) {
+                        const lineNumber = getLineNumber(node);
+                        this.processImportSpecifier(specifier, filePath, projectRoot, compilerOptions, host, lineNumber, imports);
+                    }
+                }
+                
+                // Check for import('module') - dynamic import
+                if (node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length > 0) {
+                    const specifier = getModuleSpecifier(node.arguments[0]);
+                    if (specifier && (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('@'))) {
+                        const lineNumber = getLineNumber(node);
+                        this.processImportSpecifier(specifier, filePath, projectRoot, compilerOptions, host, lineNumber, imports);
+                    }
+                }
+            }
+            
+            // Recursively visit children
+            ts.forEachChild(node, visit);
+        };
+        
+        // Start visiting from the root
+        visit(sourceFile);
+        
+        return imports;
+    }
+    
+    /**
+     * Process an import specifier: resolve it and add to imports array
+     */
+    private processImportSpecifier(
+        specifier: string,
+        filePath: string,
+        projectRoot: string,
+        compilerOptions: ts.CompilerOptions,
+        host: ts.ModuleResolutionHost,
+        lineNumber: number, // 0-based from AST
+        imports: Array<ImportInfo & { resolved?: string }>
+    ): void {
+        try {
+            const resolved = ts.resolveModuleName(specifier, filePath, compilerOptions, host);
+            if (resolved.resolvedModule) {
+                const resolvedPath = resolved.resolvedModule.resolvedFileName;
+                // Debug: Log imports that might resolve to packages/ui/src/index.ts
+                if (resolvedPath && resolvedPath.includes('packages/ui/src/index')) {
+                    debugLog(`[DependencyAnalyzer] ✅ Found import to packages/ui/src/index.ts: '${specifier}' from ${filePath} resolves to ${resolvedPath} (line ${lineNumber + 1})`);
+                }
+                imports.push({
+                    from: filePath,
+                    to: resolvedPath,
+                    specifier: specifier,
+                    resolved: resolvedPath,
+                    lineNumber: lineNumber + 1 // Convert 0-based to 1-based for consistency
+                });
+            } else {
+                // Fallback to old resolution method
                 const fallbackResolved = this.resolveImport(specifier, filePath, projectRoot);
                 if (fallbackResolved) {
+                    // Debug: Log imports that might resolve to packages/ui/src/index.ts
+                    if (fallbackResolved.includes('packages/ui/src/index')) {
+                        debugLog(`[DependencyAnalyzer] ✅ Found import to packages/ui/src/index.ts (fallback): '${specifier}' from ${filePath} resolves to ${fallbackResolved} (line ${lineNumber + 1})`);
+                    }
                     imports.push({
                         from: filePath,
                         to: fallbackResolved,
                         specifier: specifier,
-                        resolved: fallbackResolved
+                        resolved: fallbackResolved,
+                        lineNumber: lineNumber + 1 // Convert 0-based to 1-based
                     });
+                } else {
+                    debugLog(`[DependencyAnalyzer] ⚠️ Could not resolve import '${specifier}' from ${filePath}`);
                 }
             }
+        } catch (error) {
+            // Fallback to old resolution method on error
+            const fallbackResolved = this.resolveImport(specifier, filePath, projectRoot);
+            if (fallbackResolved) {
+                // Debug: Log imports that might resolve to packages/ui/src/index.ts
+                if (fallbackResolved.includes('packages/ui/src/index')) {
+                    debugLog(`[DependencyAnalyzer] ✅ Found import to packages/ui/src/index.ts (error fallback): '${specifier}' from ${filePath} resolves to ${fallbackResolved} (line ${lineNumber + 1})`);
+                }
+                imports.push({
+                    from: filePath,
+                    to: fallbackResolved,
+                    specifier: specifier,
+                    resolved: fallbackResolved,
+                    lineNumber: lineNumber + 1 // Convert 0-based to 1-based
+                });
+            } else {
+                debugLog(`[DependencyAnalyzer] ⚠️ Could not resolve import '${specifier}' from ${filePath} (error: ${error})`);
+            }
         }
-        
-        return imports;
     }
     
     /**
@@ -414,10 +529,23 @@ export class DependencyAnalyzer {
                 if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
                     continue; // Skip external packages
                 }
+                // Calculate line number from match index
+                const matchIndex = match.index;
+                let lineNumber = 1;
+                let charCount = 0;
+                const lines = content.split('\n');
+                for (let i = 0; i < lines.length; i++) {
+                    if (charCount + lines[i].length >= matchIndex) {
+                        lineNumber = i + 1;
+                        break;
+                    }
+                    charCount += lines[i].length + 1;
+                }
                 imports.push({
                     from: filePath,
                     to: '', // Will be resolved
-                    specifier: specifier
+                    specifier: specifier,
+                    lineNumber: lineNumber
                 });
             }
         }
@@ -468,6 +596,261 @@ export class DependencyAnalyzer {
         
         return null;
     }
+    /**
+     * Get the line number where a file imports another file
+     * Returns 0-based line number, or undefined if not found
+     */
+    getImportLineNumber(targetFile: string, importerFile: string): number | undefined {
+        debugLog(`[DependencyAnalyzer] getImportLineNumber called:`);
+        debugLog(`  targetFile: ${targetFile}`);
+        debugLog(`  importerFile: ${importerFile}`);
+        debugLog(`  importLineNumbers map size: ${this.importLineNumbers.size}`);
+        
+        // Try multiple path variations
+        const targetVariations = [
+            path.resolve(targetFile).replace(/\\/g, '/'),
+            path.resolve(targetFile).replace(/\//g, '\\'),
+            targetFile.replace(/\\/g, '/'),
+            targetFile.replace(/\//g, '\\')
+        ];
+        const importerVariations = [
+            path.resolve(importerFile).replace(/\\/g, '/'),
+            path.resolve(importerFile).replace(/\//g, '\\'),
+            importerFile.replace(/\\/g, '/'),
+            importerFile.replace(/\//g, '\\')
+        ];
+        
+        debugLog(`  Trying ${targetVariations.length} target variations and ${importerVariations.length} importer variations`);
+        
+        for (const targetVar of targetVariations) {
+            const lineMap = this.importLineNumbers.get(targetVar);
+            if (lineMap) {
+                debugLog(`  Found lineMap for target: ${targetVar}, size: ${lineMap.size}`);
+                for (const importerVar of importerVariations) {
+                    const lineNumber = lineMap.get(importerVar);
+                    // Only return if it's a valid number (>= 0), not undefined/null
+                    if (typeof lineNumber === 'number' && lineNumber >= 0) {
+                        debugLog(`  ✅ Found line number (0-based): ${lineNumber} for importer: ${importerVar}`);
+                        return lineNumber;
+                    } else {
+                        debugLog(`  ❌ No valid line number for importer: ${importerVar} (value: ${lineNumber})`);
+                    }
+                }
+                // Debug: Show what keys are in the map
+                const mapKeys = Array.from(lineMap.keys()).slice(0, 3);
+                debugLog(`  Sample keys in lineMap: ${mapKeys.join(', ')}`);
+            } else {
+                debugLog(`  No lineMap found for target: ${targetVar}`);
+            }
+        }
+        
+        // Debug: Show what keys are in importLineNumbers
+        const allTargetKeys = Array.from(this.importLineNumbers.keys()).slice(0, 5);
+        debugLog(`  Sample target keys in importLineNumbers: ${allTargetKeys.join(', ')}`);
+        
+        debugLog(`  ❌ Line number not found, returning undefined`);
+        return undefined; // Line number not found - do NOT return 0
+    }
+    
+    /**
+     * Find the first usage line of a symbol in a file using AST
+     * Returns 0-based line number, or undefined if not found
+     */
+    private findFirstSymbolUsageLine(
+        filePath: string,
+        content: string,
+        symbolName: string,
+        compilerOptions: ts.CompilerOptions
+    ): number | undefined {
+        try {
+            const sourceFile = ts.createSourceFile(
+                filePath,
+                content,
+                compilerOptions.target || ts.ScriptTarget.Latest,
+                true
+            );
+            
+            let best: number | undefined;
+            const importedNames = new Set<string>(); // Track imported names and aliases
+            
+            // First pass: collect imported names and aliases
+            const collectImports = (node: ts.Node): void => {
+                if (ts.isImportDeclaration(node) && node.importClause) {
+                    // Named imports: import { cn, cn as cx } from ...
+                    if (node.importClause.namedBindings) {
+                        if (ts.isNamedImports(node.importClause.namedBindings)) {
+                            for (const element of node.importClause.namedBindings.elements) {
+                                const importedName = element.name.text;
+                                const propertyName = element.propertyName?.text;
+                                // If imported as alias: import { cn as cx } -> track both
+                                if (propertyName === symbolName) {
+                                    importedNames.add(importedName); // The alias
+                                    importedNames.add(symbolName); // The original
+                                } else if (importedName === symbolName) {
+                                    importedNames.add(symbolName);
+                                }
+                            }
+                        }
+                        // Namespace import: import * as utils from ...
+                        else if (ts.isNamespaceImport(node.importClause.namedBindings)) {
+                            const namespaceName = node.importClause.namedBindings.name.text;
+                            importedNames.add(namespaceName); // Track namespace for property access
+                        }
+                    }
+                    // Default import: import cn from ...
+                    if (node.importClause.name && node.importClause.name.text === symbolName) {
+                        importedNames.add(symbolName);
+                    }
+                }
+                ts.forEachChild(node, collectImports);
+            };
+            
+            collectImports(sourceFile);
+            
+            // Second pass: find first usage
+            const visit = (node: ts.Node): void => {
+                if (best !== undefined) return; // Already found
+                
+                // Check for call expressions: cn(...) or cx(...)
+                if (ts.isCallExpression(node)) {
+                    if (ts.isIdentifier(node.expression)) {
+                        const identifier = node.expression;
+                        if (importedNames.has(identifier.text)) {
+                            const line = sourceFile.getLineAndCharacterOfPosition(identifier.getStart(sourceFile)).line;
+                            if (best === undefined || line < best) {
+                                best = line;
+                            }
+                        }
+                    }
+                    // Property access: utils.cn(...)
+                    else if (ts.isPropertyAccessExpression(node.expression)) {
+                        const propName = node.expression.name.text;
+                        if (propName === symbolName && ts.isIdentifier(node.expression.expression)) {
+                            const namespaceName = node.expression.expression.text;
+                            if (importedNames.has(namespaceName)) {
+                                const line = sourceFile.getLineAndCharacterOfPosition(node.expression.getStart(sourceFile)).line;
+                                if (best === undefined || line < best) {
+                                    best = line;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Also check for identifier usage (as fallback)
+                if (ts.isIdentifier(node) && !ts.isImportSpecifier(node.parent) && !ts.isImportClause(node.parent)) {
+                    if (importedNames.has(node.text)) {
+                        const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
+                        if (best === undefined || line < best) {
+                            best = line;
+                        }
+                    }
+                }
+                
+                ts.forEachChild(node, visit);
+            };
+            
+            visit(sourceFile);
+            
+            return best;
+        } catch (error) {
+            debugLog(`[DependencyAnalyzer] Error finding usage line: ${error}`);
+            return undefined;
+        }
+    }
+    
+    /**
+     * Fallback: find first line by text match (0-based)
+     */
+    private findFirstLineByText(text: string, needle: string): number | undefined {
+        const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const re = new RegExp(`\\b${escaped}\\b`);
+        const lines = text.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+            if (re.test(lines[i])) {
+                return i; // 0-based line
+            }
+        }
+        return undefined;
+    }
+    
+    /**
+     * Get downstream files with their usage line numbers (prefer usage over import)
+     * Returns -1 for lineNumber if line number is unknown (file can still be opened, just not navigated to a specific line)
+     */
+    async findDownstreamComponentsWithLines(
+        sourceFilePath: string,
+        codeAnalysis: CodeAnalysisResult,
+        impactedSymbols: string[] | undefined,
+        projectRoot: string | undefined
+    ): Promise<Array<{ file: string; lineNumber: number }>> {
+        const files = await this.findDownstreamComponents(sourceFilePath, codeAnalysis, impactedSymbols, projectRoot);
+        const normalizedSource = path.resolve(sourceFilePath).replace(/\\/g, '/');
+        
+        debugLog(`[DependencyAnalyzer] findDownstreamComponentsWithLines: Found ${files.length} downstream files`);
+        debugLog(`[DependencyAnalyzer] findDownstreamComponentsWithLines: sourceFilePath=${sourceFilePath}`);
+        debugLog(`[DependencyAnalyzer] findDownstreamComponentsWithLines: normalizedSource=${normalizedSource}`);
+        debugLog(`[DependencyAnalyzer] findDownstreamComponentsWithLines: importLineNumbers map size=${this.importLineNumbers.size}`);
+        
+        // Get compiler options for AST parsing
+        const tsConfig = projectRoot ? this.findTsConfig(projectRoot) : null;
+        const compilerOptions = tsConfig ? this.loadCompilerOptions(tsConfig) : this.getDefaultCompilerOptions();
+        
+        const result: Array<{ file: string; lineNumber: number }> = [];
+        
+        for (const file of files) {
+            const relPath = path.relative(projectRoot || '', file);
+            let foundLine: number | undefined;
+            
+            // Try to find usage line if we have impacted symbols
+            if (impactedSymbols && impactedSymbols.length > 0) {
+                try {
+                    const content = fs.readFileSync(file, 'utf8');
+                    // Try each symbol and take the earliest line
+                    for (const symbol of impactedSymbols) {
+                        const usageLine = this.findFirstSymbolUsageLine(file, content, symbol, compilerOptions);
+                        if (usageLine !== undefined) {
+                            if (foundLine === undefined || usageLine < foundLine) {
+                                foundLine = usageLine;
+                            }
+                        }
+                    }
+                    
+                    // Fallback to text search if AST didn't find it
+                    if (foundLine === undefined) {
+                        for (const symbol of impactedSymbols) {
+                            const textLine = this.findFirstLineByText(content, symbol);
+                            if (textLine !== undefined) {
+                                if (foundLine === undefined || textLine < foundLine) {
+                                    foundLine = textLine;
+                                }
+                            }
+                        }
+                    }
+                } catch (error) {
+                    debugLog(`[DependencyAnalyzer] Error reading file ${file} for usage detection: ${error}`);
+                }
+            }
+            
+            // Fallback to import line if usage not found
+            if (foundLine === undefined) {
+                foundLine = this.getImportLineNumber(normalizedSource, file);
+            }
+            
+            // ALWAYS include the file, but use -1 as sentinel for "unknown line"
+            // This allows the file to be opened, but not navigated to a specific line
+            const lineNumber = (typeof foundLine === 'number' && foundLine >= 0) ? foundLine : -1;
+            const stored = lineNumber >= 0;
+            console.log(`[DownstreamLine] ${relPath}: computed=${foundLine} stored=${stored} (lineNumber=${lineNumber})`);
+            result.push({ file, lineNumber });
+        }
+        
+        const validLineCount = result.filter(r => r.lineNumber >= 0).length;
+        debugLog(`[DependencyAnalyzer] findDownstreamComponentsWithLines: ${result.length} files total, ${validLineCount} with valid line numbers`);
+        
+        return result;
+    }
+
     async findDownstreamComponents(
         sourceFilePath: string, 
         codeAnalysis: CodeAnalysisResult,
@@ -685,6 +1068,8 @@ export class DependencyAnalyzer {
             }
             
             console.log(`[DependencyAnalyzer] After symbol filtering: ${filtered.size} files`);
+            
+            // Return file paths (line numbers are available via getImportLineNumber if needed)
             return Array.from(filtered);
         }
         

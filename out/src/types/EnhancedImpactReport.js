@@ -67,5 +67,5 @@ var BreakingChangeRule;
     BreakingChangeRule["JSAPI_IMPORT_SPECIFIER_CHANGED"] = "JSAPI-MOD-003";
     BreakingChangeRule["JSAPI_PACKAGE_EXPORTS_CHANGED"] = "JSAPI-MOD-004";
     BreakingChangeRule["JSAPI_JSX_COMPONENT_REMOVED"] = "JSAPI-JSX-001";
-})(BreakingChangeRule = exports.BreakingChangeRule || (exports.BreakingChangeRule = {}));
+})(BreakingChangeRule || (exports.BreakingChangeRule = BreakingChangeRule = {}));
 //# sourceMappingURL=EnhancedImpactReport.js.map

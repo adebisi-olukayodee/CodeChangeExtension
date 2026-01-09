@@ -18,13 +18,23 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EnhancedReportFormatter = void 0;
 const path = __importStar(require("path"));
@@ -38,8 +48,8 @@ const EnhancedImpactReport_1 = require("../types/EnhancedImpactReport");
  * Uses explicit rule ID strings (not constants) to ensure stability if constants are refactored.
  */
 const NO_HEURISTIC_SUFFIX_RULES = new Set([
-    'JSAPI-CLS-002',
-    'JSAPI-CLS-003',
+    'JSAPI-CLS-002', // Exported class removed - should be breaking, not heuristic
+    'JSAPI-CLS-003', // Constructor removed - message is already explicit
     'JSAPI-FN-002', // Rest parameter removed - message is already explicit
 ]);
 /**
@@ -447,7 +457,7 @@ class EnhancedReportFormatter {
                     const message = `module.exports shape changed (${kindFrom} -> ${kindTo}).`;
                     breakingChanges.push({
                         ruleId,
-                        severity: 'warning',
+                        severity: 'warning', // CJS shape changes are warnings (heuristic)
                         symbol: 'module.exports',
                         message,
                         before: `module.exports = ${kindFrom}`,
@@ -527,7 +537,7 @@ class EnhancedReportFormatter {
                     const breakingChange = {
                         ruleId: EnhancedImpactReport_1.BreakingChangeRule.EXPORT_TYPE_CHANGED,
                         severity: 'breaking',
-                        symbol: after.name,
+                        symbol: after.name, // Public API name (what consumers see - 'x' in both cases)
                         message: `Re-export '${after.name}' changed source from '${beforeSourceName}' to '${afterSourceName}' in '${after.sourceModule}'`,
                         before: `export { ${beforeSourceName} as ${after.name} } from '${before.sourceModule || after.sourceModule}'`,
                         after: `export { ${afterSourceName} as ${after.name} } from '${after.sourceModule}'`,

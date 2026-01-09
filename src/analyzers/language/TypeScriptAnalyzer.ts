@@ -7,6 +7,7 @@ import * as ts from 'typescript';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Project, SourceFile, Node, FunctionDeclaration, ClassDeclaration, MethodDeclaration, ArrowFunction, InterfaceDeclaration, TypeAliasDeclaration, EnumDeclaration } from 'ts-morph';
+import { debugLog } from '../../core/debug-logger.js';
 import {
     ILanguageAnalyzer,
     LanguageAnalysisResult,
@@ -946,9 +947,12 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
      * This is an immutable representation that can be cached and compared.
      */
     async buildSnapshot(filePath: string, content: string): Promise<SymbolSnapshot> {
-        console.log(`[TypeScriptAnalyzer] Building snapshot for: ${filePath}`);
+        debugLog(`[TypeScriptAnalyzer] ========================================`);
+        debugLog(`[TypeScriptAnalyzer] Building snapshot for: ${filePath}`);
+        debugLog(`[TypeScriptAnalyzer] Timestamp: ${new Date().toISOString()}`);
         const preview = content.replace(/\s+/g, ' ').slice(0, 160).trim();
-        console.log(`[TypeScriptAnalyzer] Content length: ${content.length} chars, preview="${preview}${content.length > 160 ? '...' : ''}"`);
+        debugLog(`[TypeScriptAnalyzer] Content length: ${content.length} chars, preview="${preview}${content.length > 160 ? '...' : ''}"`);
+        debugLog(`[TypeScriptAnalyzer] ========================================`);
         
         try {
             // Normalize file path to absolute
@@ -1572,6 +1576,25 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         // Compare interfaces (with suppression)
         const beforeInterfaces = createSymbolMap(beforeSnapshot.interfaces);
         const afterInterfaces = createSymbolMap(afterSnapshot.interfaces);
+        
+        // Log interface call signatures for debugging
+        debugLog(`[TypeScriptAnalyzer] ========== INTERFACE COMPARISON ==========`);
+        for (const [name, beforeIntf] of beforeInterfaces) {
+            const callSig = beforeIntf.metadata?.callSignature;
+            if (callSig) {
+                debugLog(`[TypeScriptAnalyzer] BEFORE interface '${name}' call signature:`);
+                debugLog(`[TypeScriptAnalyzer]    ${JSON.stringify(callSig, null, 2)}`);
+            }
+        }
+        for (const [name, afterIntf] of afterInterfaces) {
+            const callSig = afterIntf.metadata?.callSignature;
+            if (callSig) {
+                debugLog(`[TypeScriptAnalyzer] AFTER interface '${name}' call signature:`);
+                debugLog(`[TypeScriptAnalyzer]    ${JSON.stringify(callSig, null, 2)}`);
+            }
+        }
+        debugLog(`[TypeScriptAnalyzer] ========== END INTERFACE COMPARISON ==========`);
+        
         this.compareSymbols(beforeInterfaces, afterInterfaces, 'interface', changedSymbols, added, removed, modified, removedExports);
 
         // Compare type aliases (with suppression)
@@ -1642,6 +1665,26 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         for (const [name, afterSymbol] of afterMap) {
             const beforeSymbol = beforeMap.get(name);
             if (beforeSymbol) {
+                // Check if export status changed (exported -> not exported is breaking)
+                if (beforeSymbol.isExported && !afterSymbol.isExported) {
+                    // Symbol was exported before but is no longer exported
+                    // This is a breaking change even if the symbol still exists
+                    changedSymbols.push({
+                        symbol: afterSymbol,
+                        changeType: 'removed',
+                        before: beforeSymbol,
+                        after: afterSymbol,
+                        severity: 'high',
+                        isBreaking: true,
+                        metadata: {
+                            ruleId: 'TSAPI-EXP-001',
+                            message: `Symbol '${name}' is no longer exported (export keyword removed)`,
+                            detail: 'exportRemoved'
+                        }
+                    });
+                    // Continue to check for other changes (signature, etc.)
+                }
+                
                 // For functions, check overload changes first
                 // Overload removal/changes are TSAPI-FN-007 (overload set changed), not TSAPI-FN-002 (parameter removed)
                 // TSAPI-FN-002 should only be used for actual parameter arity changes (removing a parameter position)
@@ -1975,6 +2018,107 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         const beforeProps = before.metadata?.properties as Array<{ name: string; type: string; isOptional?: boolean; methodSignature?: FunctionSignature }> | undefined;
         const afterProps = after.metadata?.properties as Array<{ name: string; type: string; isOptional?: boolean; methodSignature?: FunctionSignature }> | undefined;
 
+        // FIRST: Check if interface has a call signature (interface is callable like a function)
+        // Example: interface Transformer { (data: any, headers?: AxiosRequestHeaders): any; }
+        if (before.kind === 'interface' || after.kind === 'interface') {
+            const beforeCallSig = before.metadata?.callSignature as FunctionSignature | undefined;
+            const afterCallSig = after.metadata?.callSignature as FunctionSignature | undefined;
+            
+            debugLog(`[TypeScriptAnalyzer] ========== INTERFACE CALL SIGNATURE COMPARISON ==========`);
+            debugLog(`[TypeScriptAnalyzer] Interface: '${before.name}'`);
+            debugLog(`[TypeScriptAnalyzer] Before call signature exists: ${!!beforeCallSig}`);
+            debugLog(`[TypeScriptAnalyzer] After call signature exists: ${!!afterCallSig}`);
+            
+            if (beforeCallSig) {
+                debugLog(`[TypeScriptAnalyzer] BEFORE call signature:`);
+                debugLog(`[TypeScriptAnalyzer]    Parameters: ${JSON.stringify(beforeCallSig.parameters.map(p => ({
+                    name: p.name,
+                    type: p.type,
+                    optional: p.optional
+                })))}`);
+                debugLog(`[TypeScriptAnalyzer]    Return type: ${beforeCallSig.returnType}`);
+            }
+            
+            if (afterCallSig) {
+                debugLog(`[TypeScriptAnalyzer] AFTER call signature:`);
+                debugLog(`[TypeScriptAnalyzer]    Parameters: ${JSON.stringify(afterCallSig.parameters.map(p => ({
+                    name: p.name,
+                    type: p.type,
+                    optional: p.optional
+                })))}`);
+                debugLog(`[TypeScriptAnalyzer]    Return type: ${afterCallSig.returnType}`);
+            }
+            
+            if (beforeCallSig || afterCallSig) {
+                if (beforeCallSig && afterCallSig) {
+                    // Both have call signatures - compare them
+                    const beforeParams = new Map(beforeCallSig.parameters.map(p => [p.name, p]));
+                    const afterParams = new Map(afterCallSig.parameters.map(p => [p.name, p]));
+                    
+                    debugLog(`[TypeScriptAnalyzer] Comparing call signatures parameter by parameter...`);
+                    
+                    // Check for parameter optionality changes
+                    for (const [paramName, afterParam] of afterParams) {
+                        const beforeParam = beforeParams.get(paramName);
+                        if (beforeParam) {
+                            debugLog(`[TypeScriptAnalyzer]   Parameter '${paramName}': before.optional=${beforeParam.optional}, after.optional=${afterParam.optional}`);
+                            if (beforeParam.optional && !afterParam.optional) {
+                                debugLog(`[TypeScriptAnalyzer]   ✅ BREAKING CHANGE DETECTED: Parameter '${paramName}' changed from optional to required`);
+                                return {
+                                    changeType: 'signature-changed',
+                                    isBreaking: true,
+                                    ruleId: 'TSAPI-FN-001',
+                                    message: `Interface call signature parameter '${paramName}' changed from optional to required`
+                                };
+                            }
+                        }
+                    }
+                    
+                    // Check for removed parameters
+                    for (const [paramName, beforeParam] of beforeParams) {
+                        if (!afterParams.has(paramName)) {
+                            debugLog(`[TypeScriptAnalyzer]   ✅ BREAKING CHANGE DETECTED: Parameter '${paramName}' was removed`);
+                            return {
+                                changeType: 'signature-changed',
+                                isBreaking: true,
+                                ruleId: 'TSAPI-FN-002',
+                                message: `Interface call signature parameter '${paramName}' was removed`
+                            };
+                        }
+                    }
+                    
+                    // Check return type
+                    if (beforeCallSig.returnType !== afterCallSig.returnType) {
+                        debugLog(`[TypeScriptAnalyzer]   ✅ BREAKING CHANGE DETECTED: Return type changed from '${beforeCallSig.returnType}' to '${afterCallSig.returnType}'`);
+                        return {
+                            changeType: 'type-changed',
+                            isBreaking: true,
+                            ruleId: 'TSAPI-FN-004',
+                            message: `Interface call signature return type changed from '${beforeCallSig.returnType}' to '${afterCallSig.returnType}'`
+                        };
+                    }
+                    
+                    debugLog(`[TypeScriptAnalyzer]   No breaking changes detected in call signature`);
+                } else if (beforeCallSig && !afterCallSig) {
+                    // Call signature was removed
+                    debugLog(`[TypeScriptAnalyzer]   ✅ BREAKING CHANGE DETECTED: Call signature was removed`);
+                    return {
+                        changeType: 'signature-changed',
+                        isBreaking: true,
+                        ruleId: 'TSAPI-IF-003',
+                        message: 'Interface call signature was removed (interface is no longer callable)'
+                    };
+                } else if (!beforeCallSig && afterCallSig) {
+                    // Call signature was added (not breaking, but we note it)
+                    debugLog(`[TypeScriptAnalyzer]   Call signature was added (non-breaking)`);
+                    // Continue to check properties
+                }
+            } else {
+                debugLog(`[TypeScriptAnalyzer]   No call signatures to compare`);
+            }
+            debugLog(`[TypeScriptAnalyzer] ========== END CALL SIGNATURE COMPARISON ==========`);
+        }
+
         // Check index signatures first (they affect all properties)
         const beforeIndexSigs = before.metadata?.indexSignatures as Array<{ keyType: string; valueType: string }> | undefined;
         const afterIndexSigs = after.metadata?.indexSignatures as Array<{ keyType: string; valueType: string }> | undefined;
@@ -2032,8 +2176,73 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             }
         }
 
+        // Special handling for function types: check if both are function types
+        const beforeFunctionType = beforePropMap.get('__functionType');
+        const afterFunctionType = afterPropMap.get('__functionType');
+        if (beforeFunctionType || afterFunctionType) {
+            if (beforeFunctionType && afterFunctionType) {
+                // Both are function types - compare method signatures
+                const beforeMethodSig = beforeFunctionType.methodSignature;
+                const afterMethodSig = afterFunctionType.methodSignature;
+                if (beforeMethodSig && afterMethodSig) {
+                    const beforeParams = new Map(beforeMethodSig.parameters.map(p => [p.name, p]));
+                    const afterParams = new Map(afterMethodSig.parameters.map(p => [p.name, p]));
+                    
+                    // Check for parameter optionality changes
+                    for (const [paramName, afterParam] of afterParams) {
+                        const beforeParam = beforeParams.get(paramName);
+                        if (beforeParam && beforeParam.optional && !afterParam.optional) {
+                            return {
+                                changeType: 'signature-changed',
+                                isBreaking: true,
+                                ruleId: 'TSAPI-FN-001',
+                                message: `Function type parameter '${paramName}' changed from optional to required`
+                            };
+                        }
+                    }
+                    
+                    // Check for removed parameters
+                    for (const [paramName, beforeParam] of beforeParams) {
+                        if (!afterParams.has(paramName)) {
+                            return {
+                                changeType: 'signature-changed',
+                                isBreaking: true,
+                                ruleId: 'TSAPI-FN-002',
+                                message: `Function type parameter '${paramName}' was removed`
+                            };
+                        }
+                    }
+                    
+                    // Check return type
+                    if (beforeMethodSig.returnType !== afterMethodSig.returnType) {
+                        return {
+                            changeType: 'type-changed',
+                            isBreaking: true,
+                            ruleId: 'TSAPI-FN-004',
+                            message: `Function type return type changed from '${beforeMethodSig.returnType}' to '${afterMethodSig.returnType}'`
+                        };
+                    }
+                }
+            } else if (beforeFunctionType && !afterFunctionType) {
+                // Function type was removed
+                return {
+                    changeType: 'signature-changed',
+                    isBreaking: true,
+                    ruleId: isTypeAlias ? 'TSAPI-TYPE-004' : 'TSAPI-IF-003',
+                    message: 'Function type was removed'
+                };
+            } else if (!beforeFunctionType && afterFunctionType) {
+                // Function type was added (not breaking, but we note it)
+            }
+        }
+        
         // Check for property changes (optional -> required, type changed)
         for (const [propName, afterProp] of afterPropMap) {
+            // Skip __functionType as it's handled above
+            if (propName === '__functionType') {
+                continue;
+            }
+            
             const beforeProp = beforePropMap.get(propName);
             if (beforeProp) {
                 // Optional -> Required
@@ -2239,17 +2448,17 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
     }
 
     private compareExports(beforeExports: ExportInfo[], afterExports: ExportInfo[]): SnapshotDiff['exportChanges'] {
-        console.log(`[TypeScriptAnalyzer] ========== compareExports START ==========`);
-        console.log(`[TypeScriptAnalyzer] Comparing exports: ${beforeExports.length} before, ${afterExports.length} after`);
+        debugLog(`[TypeScriptAnalyzer] ========== compareExports START ==========`);
+        debugLog(`[TypeScriptAnalyzer] Comparing exports: ${beforeExports.length} before, ${afterExports.length} after`);
         
         // Log all exports for debugging
-        console.log(`[TypeScriptAnalyzer] Before exports:`);
+        debugLog(`[TypeScriptAnalyzer] Before exports:`);
         for (const exp of beforeExports) {
-            console.log(`[TypeScriptAnalyzer]   - name='${exp.name}', kind='${exp.kind}', sourceModule='${exp.sourceModule}', sourceName='${exp.sourceName}'`);
+            debugLog(`[TypeScriptAnalyzer]   - name='${exp.name}', kind='${exp.kind}', sourceModule='${exp.sourceModule}', sourceName='${exp.sourceName}'`);
         }
-        console.log(`[TypeScriptAnalyzer] After exports:`);
+        debugLog(`[TypeScriptAnalyzer] After exports:`);
         for (const exp of afterExports) {
-            console.log(`[TypeScriptAnalyzer]   - name='${exp.name}', kind='${exp.kind}', sourceModule='${exp.sourceModule}', sourceName='${exp.sourceName}'`);
+            debugLog(`[TypeScriptAnalyzer]   - name='${exp.name}', kind='${exp.kind}', sourceModule='${exp.sourceModule}', sourceName='${exp.sourceName}'`);
         }
         
         // Build maps by exported name (public API key) - this is what consumers see
@@ -2264,7 +2473,7 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             }
             beforeMap.get(exp.name)!.push(exp);
             const sig = this.getExportSignature(exp);
-            console.log(`[TypeScriptAnalyzer] Before export '${exp.name}': signature='${sig}'`);
+            debugLog(`[TypeScriptAnalyzer] Before export '${exp.name}': signature='${sig}'`);
         }
         
         for (const exp of afterExports) {
@@ -2273,10 +2482,10 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             }
             afterMap.get(exp.name)!.push(exp);
             const sig = this.getExportSignature(exp);
-            console.log(`[TypeScriptAnalyzer] After export '${exp.name}': signature='${sig}'`);
+            debugLog(`[TypeScriptAnalyzer] After export '${exp.name}': signature='${sig}'`);
         }
         
-        console.log(`[TypeScriptAnalyzer] Maps built: before has ${beforeMap.size} unique names, after has ${afterMap.size} unique names`);
+        debugLog(`[TypeScriptAnalyzer] Maps built: before has ${beforeMap.size} unique names, after has ${afterMap.size} unique names`);
 
         const added: ExportInfo[] = [];
         const removed: ExportInfo[] = [];
@@ -2292,39 +2501,40 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         // Find removed exports
         for (const [name, beforeExportsList] of beforeMap) {
             if (!afterMap.has(name)) {
+                debugLog(`[TypeScriptAnalyzer] ✅ Export '${name}' was removed (not found in after map)`);
                 removed.push(...beforeExportsList);
             }
         }
 
         // Find modified exports (including re-export changes)
         // Compare exports that exist in both before and after by signature
-        console.log(`[TypeScriptAnalyzer] Checking for modified exports...`);
+        debugLog(`[TypeScriptAnalyzer] Checking for modified exports...`);
         for (const [name, afterExportsList] of afterMap) {
             const beforeExportsList = beforeMap.get(name);
             if (beforeExportsList) {
-                console.log(`[TypeScriptAnalyzer] Export '${name}' exists in both: before=${beforeExportsList.length} entries, after=${afterExportsList.length} entries`);
+                debugLog(`[TypeScriptAnalyzer] Export '${name}' exists in both: before=${beforeExportsList.length} entries, after=${afterExportsList.length} entries`);
                 
                 // Find re-export entries in both lists
                 const beforeReexport = beforeExportsList.find(e => e.kind === 're-export' || e.sourceModule !== undefined);
                 const afterReexport = afterExportsList.find(e => e.kind === 're-export' || e.sourceModule !== undefined);
                 
-                console.log(`[TypeScriptAnalyzer]   beforeReexport: ${beforeReexport ? `kind=${beforeReexport.kind}, sourceModule=${beforeReexport.sourceModule}, sourceName=${beforeReexport.sourceName}` : 'none'}`);
-                console.log(`[TypeScriptAnalyzer]   afterReexport: ${afterReexport ? `kind=${afterReexport.kind}, sourceModule=${afterReexport.sourceModule}, sourceName=${afterReexport.sourceName}` : 'none'}`);
+                debugLog(`[TypeScriptAnalyzer]   beforeReexport: ${beforeReexport ? `kind=${beforeReexport.kind}, sourceModule=${beforeReexport.sourceModule}, sourceName=${beforeReexport.sourceName}` : 'none'}`);
+                debugLog(`[TypeScriptAnalyzer]   afterReexport: ${afterReexport ? `kind=${afterReexport.kind}, sourceModule=${afterReexport.sourceModule}, sourceName=${afterReexport.sourceName}` : 'none'}`);
                 
                 if (beforeReexport && afterReexport) {
                     // Both are re-exports - compare signatures
                     const beforeSig = this.getExportSignature(beforeReexport);
                     const afterSig = this.getExportSignature(afterReexport);
                     
-                    console.log(`[TypeScriptAnalyzer] Comparing re-export '${name}': before sig='${beforeSig}', after sig='${afterSig}'`);
-                    console.log(`[TypeScriptAnalyzer]   Signatures equal: ${beforeSig === afterSig}`);
+                    debugLog(`[TypeScriptAnalyzer] Comparing re-export '${name}': before sig='${beforeSig}', after sig='${afterSig}'`);
+                    debugLog(`[TypeScriptAnalyzer]   Signatures equal: ${beforeSig === afterSig}`);
                     
                     if (beforeSig !== afterSig) {
                         // Signature changed - sourceModule or sourceName changed
                         modified.push({ before: beforeReexport, after: afterReexport });
-                        console.log(`[TypeScriptAnalyzer] ✅ Re-export '${name}' changed: ${beforeSig} → ${afterSig}`);
+                        debugLog(`[TypeScriptAnalyzer] ✅ Re-export '${name}' changed: ${beforeSig} → ${afterSig}`);
                     } else {
-                        console.log(`[TypeScriptAnalyzer] Re-export '${name}' unchanged (signatures match)`);
+                        debugLog(`[TypeScriptAnalyzer] Re-export '${name}' unchanged (signatures match)`);
                     }
                 } else if (!beforeReexport && !afterReexport) {
                     // Neither is a re-export - compare as regular exports
@@ -2335,31 +2545,39 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                         const afterSig = this.getExportSignature(afterExport);
                         if (beforeSig !== afterSig) {
                             modified.push(afterExport); // Keep simple format for non-re-export changes
-                            console.log(`[TypeScriptAnalyzer] Export '${name}' changed: ${beforeSig} → ${afterSig}`);
+                            debugLog(`[TypeScriptAnalyzer] Export '${name}' changed: ${beforeSig} → ${afterSig}`);
                         }
                     }
                 } else {
                     // One is re-export, one is not - this is a type change
-                    console.log(`[TypeScriptAnalyzer] Export '${name}' type changed (re-export ↔ declaration)`);
+                    debugLog(`[TypeScriptAnalyzer] Export '${name}' type changed (re-export ↔ declaration)`);
                     modified.push(afterReexport || afterExportsList[0]);
                 }
             }
         }
 
-        console.log(`[TypeScriptAnalyzer] Export comparison result: ${added.length} added, ${removed.length} removed, ${modified.length} modified`);
+        debugLog(`[TypeScriptAnalyzer] Export comparison result: ${added.length} added, ${removed.length} removed, ${modified.length} modified`);
+        
+        // Log details of removed exports
+        if (removed.length > 0) {
+            debugLog(`[TypeScriptAnalyzer] ✅ Removed exports:`);
+            for (const rem of removed) {
+                debugLog(`[TypeScriptAnalyzer]   - name='${rem.name}', kind='${rem.kind}', line=${rem.line}`);
+            }
+        }
         
         // Log details of modified exports
         for (const mod of modified) {
             if ('before' in mod && 'after' in mod) {
                 const change = mod as { before: ExportInfo; after: ExportInfo };
-                console.log(`[TypeScriptAnalyzer]   ✅ Modified (re-export): '${change.after.name}' (${change.before.sourceName} → ${change.after.sourceName})`);
+                debugLog(`[TypeScriptAnalyzer]   ✅ Modified (re-export): '${change.after.name}' (${change.before.sourceName} → ${change.after.sourceName})`);
             } else {
                 const exp = mod as ExportInfo;
-                console.log(`[TypeScriptAnalyzer]   Modified: '${exp.name}'`);
+                debugLog(`[TypeScriptAnalyzer]   Modified: '${exp.name}'`);
             }
         }
         
-        console.log(`[TypeScriptAnalyzer] ========== compareExports END ==========`);
+        debugLog(`[TypeScriptAnalyzer] ========== compareExports END ==========`);
 
         return { 
             added, 
@@ -2622,6 +2840,82 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         const name = intf.getName();
         const properties: Array<{ name: string; type: string; isOptional?: boolean; isReadonly?: boolean; methodSignature?: FunctionSignature }> = [];
         
+        // FIRST: Check if the interface itself is callable (has a call signature)
+        // Example: interface Transformer { (data: any, headers?: AxiosRequestHeaders): any; }
+        let interfaceCallSignature: FunctionSignature | undefined = undefined;
+        try {
+            const tsApi = this.getTsApi();
+            const compilerNode = intf.compilerNode as unknown as ts.InterfaceDeclaration;
+            
+            debugLog(`[TypeScriptAnalyzer] ========== INTERFACE CALL SIGNATURE CAPTURE ==========`);
+            debugLog(`[TypeScriptAnalyzer] Interface: '${name}'`);
+            debugLog(`[TypeScriptAnalyzer] File: ${intf.getSourceFile().getFilePath()}`);
+            
+            // Log TypeScript versions for debugging
+            debugLog(`[TypeScriptAnalyzer] tsApi version: ${tsApi.version}`);
+            try {
+                const tsMorph = require("ts-morph");
+                debugLog(`[TypeScriptAnalyzer] ts-morph ts version: ${tsMorph.ts.version}`);
+            } catch (error) {
+                debugLog(`[TypeScriptAnalyzer] Failed to get ts-morph ts version: ${error}`);
+            }
+            
+            // Get interface members directly from AST
+            const members = compilerNode.members || [];
+            const sourceFile = compilerNode.getSourceFile();
+            debugLog(`[TypeScriptAnalyzer] Interface members count: ${members.length}`);
+            
+            // Count member kinds and log raw member text
+            const memberKinds = new Map<string, number>();
+            let callSignatureCount = 0;
+            for (let i = 0; i < members.length; i++) {
+                const member = members[i];
+                const kind = tsApi.SyntaxKind[member.kind] || `Unknown(${member.kind})`;
+                memberKinds.set(kind, (memberKinds.get(kind) || 0) + 1);
+                
+                // Log raw member text - this is the key debugging info
+                const memberText = member.getText(sourceFile);
+                debugLog(`[TypeScriptAnalyzer] Member ${i} (${kind}): "${memberText}"`);
+                
+                if (tsApi.isCallSignatureDeclaration(member)) {
+                    callSignatureCount++;
+                    debugLog(`[TypeScriptAnalyzer]   ✅ This is a CallSignatureDeclaration!`);
+                }
+            }
+            debugLog(`[TypeScriptAnalyzer] Member kinds: ${Array.from(memberKinds.entries()).map(([k, v]) => `${k}:${v}`).join(', ')}`);
+            debugLog(`[TypeScriptAnalyzer] CallSignatureDeclaration count: ${callSignatureCount}`);
+            
+            if (callSignatureCount > 0) {
+                // Find the first call signature declaration
+                const callSigDecl = members.find(m => tsApi.isCallSignatureDeclaration(m)) as ts.CallSignatureDeclaration | undefined;
+                
+                if (callSigDecl) {
+                    // Build signature directly from the CallSignatureDeclaration node
+                    interfaceCallSignature = this.buildCallSignatureFromNode(callSigDecl, sourceFile);
+                    
+                    if (interfaceCallSignature) {
+                        debugLog(`[TypeScriptAnalyzer] ✅ Interface '${name}' has call signature:`);
+                        debugLog(`[TypeScriptAnalyzer]    Parameters: ${JSON.stringify(interfaceCallSignature.parameters.map(p => ({
+                            name: p.name,
+                            type: p.type,
+                            optional: p.optional
+                        })))}`);
+                        debugLog(`[TypeScriptAnalyzer]    Return type: ${interfaceCallSignature.returnType}`);
+                        debugLog(`[TypeScriptAnalyzer]    Formatted: ${this.formatMethodSignatureType(interfaceCallSignature)}`);
+                    } else {
+                        debugLog(`[TypeScriptAnalyzer] ❌ Interface '${name}' has CallSignatureDeclaration but failed to extract signature`);
+                    }
+                } else {
+                    debugLog(`[TypeScriptAnalyzer] ❌ Interface '${name}' callSignatureCount > 0 but could not find CallSignatureDeclaration node`);
+                }
+            } else {
+                debugLog(`[TypeScriptAnalyzer] ❌ Interface '${name}' does NOT have a call signature (CallSignatureDeclaration count: ${callSignatureCount})`);
+            }
+            debugLog(`[TypeScriptAnalyzer] ========== END CALL SIGNATURE CAPTURE ==========`);
+        } catch (error) {
+            debugLog(`[TypeScriptAnalyzer] ❌ Failed to extract call signature from interface '${name}': ${error}`);
+        }
+        
         // Extract properties and methods  
         // Note: Interface methods can appear as both properties (with call signatures) and methods
         const processedNames = new Set<string>();
@@ -2720,19 +3014,83 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             }
         }
 
+        // Build stable signature string that includes call signature
+        let stableSignature = `interface ${name}`;
+        if (interfaceCallSignature) {
+            const callSigString = this.formatMethodSignatureType(interfaceCallSignature);
+            stableSignature = `interface ${name} ${callSigString}`;
+        }
+        
         return {
             name,
             qualifiedName: name,
             line: intf.getStartLineNumber(),
             column: intf.getStartLineNumber(true),
-            signature: `interface ${name}`,
+            signature: stableSignature,
             isExported: intf.isExported(),
             kind: 'interface',
             metadata: {
                 extends: intf.getExtends().map(e => e.getText()),
-                properties: properties // Store full property info for comparison
+                properties: properties, // Store full property info for comparison
+                callSignature: interfaceCallSignature, // Store FunctionSignature object for detailed comparison
+                callSignatureString: interfaceCallSignature ? this.formatMethodSignatureType(interfaceCallSignature) : undefined // Store string representation
             }
         };
+    }
+    
+    /**
+     * Build FunctionSignature directly from CallSignatureDeclaration node
+     * Extracts parameters and return type from the AST node itself
+     */
+    private buildCallSignatureFromNode(
+        callSigDecl: ts.CallSignatureDeclaration,
+        sourceFile: ts.SourceFile
+    ): FunctionSignature | undefined {
+        try {
+            const tsApi = this.getTsApi();
+            const parameters: ParameterSignature[] = [];
+            
+            // Extract parameters from the call signature declaration
+            if (callSigDecl.parameters && callSigDecl.parameters.length > 0) {
+                for (const param of callSigDecl.parameters) {
+                    let paramName = 'param';
+                    if (param.name) {
+                        if (tsApi.isIdentifier(param.name)) {
+                            paramName = param.name.text;
+                        } else if (tsApi.isObjectBindingPattern(param.name) || tsApi.isArrayBindingPattern(param.name)) {
+                            paramName = '...'; // Destructuring pattern
+                        }
+                    }
+                    
+                    const paramType = param.type 
+                        ? param.type.getText(sourceFile)
+                        : 'any';
+                    
+                    const isOptional = !!param.questionToken;
+                    const isRest = !!param.dotDotDotToken;
+                    
+                    parameters.push({
+                        name: paramName,
+                        type: paramType,
+                        optional: isOptional,
+                        rest: isRest
+                    });
+                }
+            }
+            
+            // Extract return type
+            const returnType = callSigDecl.type 
+                ? callSigDecl.type.getText(sourceFile)
+                : 'any';
+            
+            return {
+                parameters,
+                returnType
+            };
+        } catch (error) {
+            debugLog(`[TypeScriptAnalyzer] Failed to build call signature from node: ${error}`);
+            return undefined;
+        }
     }
 
     private createTypeAliasSymbolInfo(typeAlias: TypeAliasDeclaration): SymbolInfo {
@@ -2742,15 +3100,35 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         const tsApi = this.getTsApi();
         
         // Extract properties if this is an object type literal or intersection with object literals
-        const properties: Array<{ name: string; type: string; isOptional?: boolean }> = [];
+        const properties: Array<{ name: string; type: string; isOptional?: boolean; methodSignature?: FunctionSignature }> = [];
         const indexSignatures: Array<{ keyType: string; valueType: string }> = [];
         
         if (typeNode) {
             try {
                 const compilerNode = typeNode.compilerNode as unknown as ts.Node;
                 
+                // Handle function types: type Transformer = (data: any, headers?: AxiosRequestHeaders) => any;
+                if (tsApi.isFunctionTypeNode(compilerNode) && this.checker) {
+                    try {
+                        const type = this.checker.getTypeAtLocation(compilerNode);
+                        const callSignatures = type.getCallSignatures();
+                        if (callSignatures.length > 0) {
+                            const tsSig = callSignatures[0];
+                            const methodSignature = this.buildMethodSignature(tsSig, compilerNode);
+                            // Store as a property with method signature for comparison
+                            // Use a special name to indicate this is the function type itself
+                            properties.push({
+                                name: '__functionType',
+                                type: this.formatMethodSignatureType(methodSignature),
+                                methodSignature: methodSignature
+                            });
+                        }
+                    } catch (error) {
+                        console.log(`[TypeScriptAnalyzer] Failed to extract function type signature: ${error}`);
+                    }
+                }
                 // Handle direct object type literal: type X = { a?: string }
-                if (tsApi.isTypeLiteralNode(compilerNode)) {
+                else if (tsApi.isTypeLiteralNode(compilerNode)) {
                     this.extractPropertiesFromTypeLiteral(compilerNode, properties, indexSignatures);
                 }
                 // Handle intersection types: type X = A & { a?: string }
@@ -2818,7 +3196,7 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
      */
     private extractPropertiesFromTypeLiteral(
         typeLiteral: ts.TypeLiteralNode,
-        properties: Array<{ name: string; type: string; isOptional?: boolean }>,
+        properties: Array<{ name: string; type: string; isOptional?: boolean; methodSignature?: FunctionSignature }>,
         indexSignatures: Array<{ keyType: string; valueType: string }>
     ): void {
         const tsApi = this.getTsApi();
@@ -2828,6 +3206,27 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             if (tsApi.isPropertySignature(member)) {
                 const propInfo = this.extractPropertySignature(member);
                 if (propInfo) {
+                    // Check if this property has a function type (call signatures)
+                    if (this.checker) {
+                        try {
+                            const propType = this.checker.getTypeAtLocation(member);
+                            const callSignatures = propType.getCallSignatures();
+                            if (callSignatures.length > 0) {
+                                // This is a method signature - extract with parameters
+                                const tsSig = callSignatures[0];
+                                const methodSignature = this.buildMethodSignature(tsSig, member);
+                                properties.push({
+                                    ...propInfo,
+                                    type: this.formatMethodSignatureType(methodSignature),
+                                    methodSignature: methodSignature
+                                });
+                                continue;
+                            }
+                        } catch (error) {
+                            // Fallback to regular property extraction
+                            console.log(`[TypeScriptAnalyzer] Failed to extract method signature from property: ${error}`);
+                        }
+                    }
                     properties.push(propInfo);
                 }
             }
@@ -2839,9 +3238,27 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                 }
             }
             // Handle method signatures: { method(): void }
-            // Note: Method signatures are tracked but not used for property breaking change detection
             else if (tsApi.isMethodSignature(member)) {
-                // Methods are part of the type but handled separately
+                // Extract method signature with parameters
+                if (this.checker) {
+                    try {
+                        const methodType = this.checker.getTypeAtLocation(member);
+                        const callSignatures = methodType.getCallSignatures();
+                        if (callSignatures.length > 0) {
+                            const tsSig = callSignatures[0];
+                            const methodSignature = this.buildMethodSignature(tsSig, member);
+                            const methodName = tsApi.isIdentifier(member.name) ? member.name.text : 'unknown';
+                            properties.push({
+                                name: methodName,
+                                type: this.formatMethodSignatureType(methodSignature),
+                                isOptional: !!member.questionToken,
+                                methodSignature: methodSignature
+                            });
+                        }
+                    } catch (error) {
+                        console.log(`[TypeScriptAnalyzer] Failed to extract method signature: ${error}`);
+                    }
+                }
             }
         }
     }
@@ -3777,8 +4194,9 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
             
             // Build appropriate shape
             if (kind === 'variable') {
-                const isConst = !!(targetDecl.modifiers && 
-                    targetDecl.modifiers.some(m => m.kind === tsApi.SyntaxKind.ConstKeyword));
+                const modifiers = tsApi.canHaveModifiers(targetDecl) ? tsApi.getModifiers(targetDecl) : undefined;
+                const isConst = !!(modifiers && 
+                    modifiers.some((m) => m.kind === tsApi.SyntaxKind.ConstKeyword));
                 return {
                     kind: isConst ? 'const' : 'variable',
                     name: exportName,
@@ -3976,7 +4394,7 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                     kind: 'property',
                     type: this.checker!.typeToString(propType),
                     optional: !!propDecl.questionToken,
-                    readonly: !!(propDecl.modifiers && propDecl.modifiers.some(m => m.kind === tsApi.SyntaxKind.ReadonlyKeyword)),
+                    readonly: !!(propDecl && tsApi.canHaveModifiers(propDecl) && tsApi.getModifiers(propDecl)?.some((m) => m.kind === tsApi.SyntaxKind.ReadonlyKeyword)),
                     visibility,
                     static: isStatic
                 };
@@ -4205,7 +4623,7 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                         ? this.formatMethodSignatureType(methodSignature) // Format method signature as type string
                         : this.normalizeTypeString(this.checker.typeToString(propType)),
                     optional: !!(propDecl && (tsApi.isPropertySignature(propDecl) || tsApi.isPropertyDeclaration(propDecl)) && propDecl.questionToken),
-                    readonly: !!(propDecl && propDecl.modifiers && propDecl.modifiers.some(m => m.kind === tsApi.SyntaxKind.ReadonlyKeyword)),
+                    readonly: !!(propDecl && tsApi.canHaveModifiers(propDecl) && tsApi.getModifiers(propDecl)?.some((m) => m.kind === tsApi.SyntaxKind.ReadonlyKeyword)),
                     // Store method signature separately for comparison
                     methodSignature: methodSignature
                 });
@@ -4228,7 +4646,7 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
                                     indexSignatures.push({
                                         keyType: this.normalizeTypeString(checker.typeToString(checker.getTypeFromTypeNode(keyType))),
                                         valueType: this.normalizeTypeString(checker.typeToString(checker.getTypeFromTypeNode(valueType))),
-                                        readonly: !!(member.modifiers && member.modifiers.some(m => m.kind === tsApi.SyntaxKind.ReadonlyKeyword))
+                                        readonly: !!(tsApi.canHaveModifiers(member) && tsApi.getModifiers(member)?.some((m) => m.kind === tsApi.SyntaxKind.ReadonlyKeyword))
                                     });
                                 }
                             }
@@ -4279,7 +4697,8 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         
         const name = symbol.getName();
         const members: Array<{ name: string; value?: string | number }> = [];
-        const isConst = !!(decl.modifiers && decl.modifiers.some(m => m.kind === tsApi.SyntaxKind.ConstKeyword));
+        const modifiers = tsApi.canHaveModifiers(decl) ? tsApi.getModifiers(decl) : undefined;
+        const isConst = !!(modifiers && modifiers.some((m) => m.kind === tsApi.SyntaxKind.ConstKeyword));
         
         // Check if members exists
         if (!decl.members || decl.members.length === 0) {
@@ -4338,7 +4757,8 @@ export class TypeScriptAnalyzer implements ILanguageAnalyzer {
         const name = symbol.getName();
         const type = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
         const typeText = this.checker.typeToString(type);
-        const isConst = !!(decl.modifiers && decl.modifiers.some(m => m.kind === tsApi.SyntaxKind.ConstKeyword));
+        const modifiers = tsApi.canHaveModifiers(decl) ? tsApi.getModifiers(decl) : undefined;
+        const isConst = !!(modifiers && modifiers.some((m) => m.kind === tsApi.SyntaxKind.ConstKeyword));
         
         // Check if this variable has a function type (arrow function)
         // If it has call signatures, treat it as a function
